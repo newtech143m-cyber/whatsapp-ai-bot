@@ -112,6 +112,7 @@ let db = {
     notifySecret: '',      // MECO: sirta /api/notify (si toos ah ayaa loo sameeyaa)
     customerReceipts: false, // MECO: rasiid WhatsApp ah u dir macmiilka
     appAutoReply: true,    // MECO: AI-gu ha ka jawaabo fariimaha app-ka
+    useAI: false,          // false = maskaxda af-Soomaaliga ee MECO (key la'aan); true = AI dibadeed (Gemini/OpenRouter)
     mecoUrl: 'https://script.google.com/macros/s/AKfycbzOAYE9TIE8-xCGYLQEkiJljVAz-pHl5rIaNaB66fEO_lobtmf9R5N-5Ju7axc0H9A_/exec',
   },
   chats: {},
@@ -349,7 +350,7 @@ async function replyTo(jid) {
   busy.add(jid);
   try {
     await sock.sendPresenceUpdate('composing', jid).catch(() => {});
-    let answer = await askAI(chat);
+    let answer = db.settings.useAI ? await askAI(chat) : await customerEngine(chat, jid);
     if (!answer) return;
     // bot-ka waxa la joojiyay inta AI-gu ka fikirayay?
     if (!db.settings.botEnabled || isPaused(chat)) return;
@@ -547,7 +548,7 @@ async function appFallback(x) {
 }
 async function handleAppMessage(x) {
   const who = `${x.customer || 'Macmiil'}${x.phone ? ' · ' + x.phone : ''}`;
-  const tag = x.kind === 'fault' ? '🛠 *CILAD* — ' : '📱 ';
+  const tag = x.kind === 'fault' ? '🛠 *CILAD* — ' : x.escalate ? '🙋 ' : '📱 ';
   await toAdmins(`${tag}*${x.customer || 'Macmiil'}* — app-ka MECO\n📞 ${x.phone || '—'} · ${x.ticketNo}\n\n${x.text}${x.answered ? `\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_\n${x.answered}` : ''}\n\n_↩️ Reply garee fariintan si aad ugu jawaabto app-ka._`);
   if (x.answered) return;                       // MECO ayaa horay uga jawaabay (salaan, deyn, rasiid, cilad…)
   if (db.settings.appAutoReply === false) return appFallback(x);
@@ -578,6 +579,40 @@ async function handleAppMessage(x) {
 }
 
 let currentAdminJid = null;
+// 🧠 Maskaxda af-Soomaaliga ee MECO (key la'aan): maamulaha
+async function adminEngine(jid, text) {
+  await sock.sendPresenceUpdate('composing', jid).catch(() => {});
+  try {
+    const r = await mecoCall('ask', { role: 'admin', text });
+    if (r.error) return sendText(jid, '⚠️ ' + r.error);
+    if (r.pdf && r.pdf.b64) {
+      const id = newId(); ourIds.add(id);
+      await sock.sendMessage(jid, { document: Buffer.from(r.pdf.b64, 'base64'), mimetype: 'application/pdf', fileName: r.pdf.name || 'MECO.pdf' }, { messageId: id });
+      return;
+    }
+    if (r.sendReceipt) {
+      const x = r.sendReceipt, to = toJid(x.phone);
+      if (!to) return sendText(jid, `⚠️ ${x.name} lambar telefoon kuma diiwaangashana MECO.`);
+      await sendText(to, ['⚡ *MECO POWER SUPPLY*', '🧾 *RASIID LACAG-BIXIN*', '', `Rasiid: *${x.receipt}*`, `Macmiil: ${x.name}`, `Lacag: *${money(x.amount)}*`, `Hab: ${x.method}`,
+        `Taariikh: ${x.date} ${x.time || ''}`, x.staff ? `Qaaday: ${x.staff}` : '', `Deynta haray: ${money(x.due)}`, '', 'Mahadsanid! ✅', '_Powering Mustaxiil._'].filter((l) => l !== '').join('\n'));
+      return sendText(jid, `✅ Rasiidka ${x.receipt} waxaa loo diray ${x.name} (${x.phone}).`);
+    }
+    return sendText(jid, r.text || '…');
+  } finally { sock?.sendPresenceUpdate('paused', jid).catch(() => {}); }
+}
+// 🧠 Macaamiisha WhatsApp-ka (key la'aan)
+async function customerEngine(chat, jid) {
+  const pending = [];
+  for (let i = chat.messages.length - 1; i >= 0 && chat.messages[i].role === 'user'; i--) pending.unshift(chat.messages[i].text);
+  const text = pending.join('\n') || (chat.messages[chat.messages.length - 1] || {}).text || '';
+  const r = await mecoCall('ask', { role: 'customer', phone: chat.phone, text });
+  if (r.error) throw new Error('MECO: ' + r.error);
+  if (r.escalate) {
+    chat.needsHuman = true; saveDb(jid);
+    toAdmins(`🙋 *${chat.name || chat.phone || 'Macmiil'}* (WhatsApp${chat.phone ? ' · ' + chat.phone : ''})${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_ ${r.text.split('\n')[0]}`).catch(() => {});
+  }
+  return r.text;
+}
 const adminHistory = new Map();
 function quotedText(m) {
   const msg = m.message || {};
@@ -596,6 +631,7 @@ async function handleAdmin(jid, text, m) {
     return sendText(jid, r.error ? '⚠️ Lama dirin: ' + r.error : `✅ Waa loo diray *${r.customer}* (app-ka · ${r.ticketNo})`);
   }
   currentAdminJid = jid;
+  if (!db.settings.useAI) return adminEngine(jid, text);
   const h = adminHistory.get(jid) || [];
   if (/^\/?(reset|cusub|clear)$/i.test(text.trim())) { adminHistory.delete(jid); return sendText(jid, '🔄 Sheekada waa la tirtiray.'); }
   h.push({ role: 'user', content: text });
@@ -722,7 +758,7 @@ app.get('/api/status', (req, res) => {
   const chats = Object.values(db.chats);
   res.json({
     connected: wa.connected, qr: wa.qr, me: wa.me, lastError: wa.lastError,
-    botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: aiChain().slice(0, 1).map((c) => `${c.provider} · ${c.model}`)[0] || '— (key ma jiro)',
+    botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: !db.settings.useAI ? '🧠 Maskaxda af-Soomaaliga (key la\'aan)' : (aiChain().slice(0, 1).map((c) => `${c.provider} · ${c.model}`)[0] || '— (key ma jiro)'),
     sheet: { configured: !!SHEET_URL, ...knowledge, text: undefined, chars: knowledge.text.length },
     stats: {
       chats: chats.length,
@@ -802,6 +838,7 @@ app.post('/api/settings', (req, res) => {
     ...(s.notifyNumbers !== undefined && { notifyNumbers: String(s.notifyNumbers) }),
     ...(s.customerReceipts !== undefined && { customerReceipts: !!s.customerReceipts }),
     ...(s.appAutoReply !== undefined && { appAutoReply: !!s.appAutoReply }),
+    ...(s.useAI !== undefined && { useAI: !!s.useAI }),
     ...(s.mecoUrl !== undefined && { mecoUrl: String(s.mecoUrl).trim() }),
     ...(s.aiProvider && PROVIDERS[s.aiProvider] && { aiProvider: s.aiProvider }),
     ...(s.aiModel !== undefined && { aiModel: String(s.aiModel).trim() }),
@@ -824,6 +861,11 @@ app.get('/api/knowledge', (req, res) => res.json({ ...knowledge, preview: knowle
 // Tijaabi AI-ga adigoon WhatsApp isticmaalin
 app.post('/api/test', async (req, res) => {
   try {
+    if (!db.settings.useAI) {
+      const last = [...(req.body.messages || [])].reverse().find((m) => m.role === 'user');
+      const r = await mecoCall('ask', { role: req.body.admin ? 'admin' : 'customer', phone: req.body.phone || '', text: last ? last.text : '' });
+      return res.json({ answer: r.error ? '⚠️ ' + r.error : r.text });
+    }
     const fake = { name: 'Tijaabo', messages: (req.body.messages || []).map((m) => ({ role: m.role, text: m.text })) };
     res.json({ answer: await askAI(fake) });
   } catch (e) { res.status(500).json({ error: e.message }); }
