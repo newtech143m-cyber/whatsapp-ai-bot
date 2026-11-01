@@ -43,11 +43,14 @@ function aiCfg() {
 }
 const stripThink = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 // Model-yada isku day mid mid — haddii mid xaddid (429) ama khalad gaaro, kan xiga
-async function tryModels(fn) {
+// Macaamiisha (jawaab qoraal oo kaliya, tools la'aan): model-yo af-Soomaali ku wanaagsan ayaa marka hore la isku dayaa
+const CUSTOMER_MODELS = { openrouter: ['google/gemma-3-27b-it:free', 'meta-llama/llama-3.3-70b-instruct:free'] };
+async function tryModels(fn, forCustomer) {
   const cfg = aiCfg();
   if (!cfg.key) throw new Error('AI key lama gelin — Dashboard → Habaynta → AI');
   let last;
-  for (const model of cfg.models) {
+  const models = forCustomer && !db.settings.aiModel && CUSTOMER_MODELS[cfg.provider] ? [...CUSTOMER_MODELS[cfg.provider], ...cfg.models] : cfg.models;
+  for (const model of models) {
     try { return stripThink(await fn({ ...cfg, model })); }
     catch (e) { last = e; console.error(`AI ${cfg.provider}/${model}:`, e.message); }
   }
@@ -212,7 +215,7 @@ async function askAI(chat) {
     knowledge.text ? `\n=== MACLUUMAADKA GANACSIGA (Google Sheet) ===\n${knowledge.text}` : '',
   ].filter(Boolean).join('\n');
 
-  return tryModels((cfg) => callAI(cfg, system, messages));
+  return tryModels((cfg) => callAI(cfg, system, messages), true);
 }
 
 async function postJSON(url, headers, body) {
@@ -513,10 +516,18 @@ async function toAdmins(text) {
   if (!wa.connected) { adminJids().forEach((jid) => notifyQueue.push({ jid, text })); return; }
   for (const jid of adminJids()) { try { await sendText(jid, text); } catch (e) { notifyQueue.push({ jid, text }); } }
 }
+const appFallbackAt = new Map();
+async function appFallback(x) {
+  if (Date.now() - (appFallbackAt.get(x.ticketId) || 0) < 30 * 60 * 1000) return;
+  appFallbackAt.set(x.ticketId, Date.now());
+  await mecoCall('chat_reply', { ticketId: x.ticketId, body: 'Fariintaada waa la helay ✅. Maamulaha ayaa dhowaan kuu soo jawaabi doona.', from: 'bot' });
+}
 async function handleAppMessage(x) {
   const who = `${x.customer || 'Macmiil'}${x.phone ? ' · ' + x.phone : ''}`;
-  await toAdmins(`📱 *${x.customer || 'Macmiil'}* — app-ka MECO\n📞 ${x.phone || '—'} · ${x.ticketNo}\n\n${x.text}\n\n_↩️ Reply garee fariintan si aad ugu jawaabto app-ka._`);
-  if (db.settings.appAutoReply === false) return;
+  const tag = x.kind === 'fault' ? '🛠 *CILAD* — ' : '📱 ';
+  await toAdmins(`${tag}*${x.customer || 'Macmiil'}* — app-ka MECO\n📞 ${x.phone || '—'} · ${x.ticketNo}\n\n${x.text}${x.answered ? `\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_\n${x.answered}` : ''}\n\n_↩️ Reply garee fariintan si aad ugu jawaabto app-ka._`);
+  if (x.answered) return;                       // MECO ayaa horay uga jawaabay (salaan, deyn, rasiid, cilad…)
+  if (db.settings.appAutoReply === false) return appFallback(x);
   // AI jawaab (xogta macmiilkan oo kaliya)
   const hist = [];
   for (const h of (x.history || []).slice(-12)) {
@@ -529,8 +540,13 @@ async function handleAppMessage(x) {
   const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
   const system = CUSTOMER_PROMPT + `\nWaqtiga hadda: ${now}\nMagaca macmiilka: ${x.customer}\nACCOUNT (xogta macmiilkan):\n${JSON.stringify(x.context || {}, null, 1).slice(0, 6000)}`;
   let answer;
-  try { answer = await tryModels((cfg) => callAI(cfg, system, hist)); }
-  catch (e) { console.error('App AI error:', e.message); return toAdmins(`⚠️ AI-gu kama jawaabin ${who} (${x.ticketNo}): ${e.message}\n_Reply garee fariinta kore si aad adigu ugu jawaabto._`); }
+  try { answer = await tryModels((cfg) => callAI(cfg, system, hist), true); }
+  catch (e) {
+    console.error('App AI error:', e.message);
+    db.settings.lastAiError = `${new Date().toISOString()} · ${e.message}`.slice(0, 400); saveDb();
+    await appFallback(x);
+    return toAdmins(`⚠️ AI-gu kama jawaabin ${who} (${x.ticketNo}): ${e.message}\n_Macmiilka waxaa loo sheegay in fariinta la helay. Reply garee fariinta kore si aad adigu ugu jawaabto._`);
+  }
   const escalate = /\[ADMIN\]/i.test(answer);
   answer = answer.replace(/\[ADMIN\]/gi, '').trim();
   if (!answer) return;
