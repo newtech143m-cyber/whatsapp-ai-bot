@@ -413,7 +413,7 @@ async function aiFailed(chat, jid, e) {
     }
     if (Date.now() - lastAiAlert > 10 * 60 * 1000) {
       lastAiAlert = Date.now();
-      await toAdmins(`⚠️ *AI-gu kama jawaabin* ${chat.name || chat.phone || ''}\nSabab: ${e.message}${/data policy|No endpoints/i.test(e.message) ? '\n\n👉 OpenRouter: fur openrouter.ai/settings/privacy oo shid "free model publication / training".' : /429|rate|limit|quota/i.test(e.message) ? '\n\n👉 Xaddidkii bilaashka ayaa dhammaaday — sug ama credit ku shub.' : /401|auth|key/i.test(e.message) ? '\n\n👉 API key-ga hubi (dashboard → Habaynta → AI).' : ''}`);
+      await toSelf(chat.sid, `⚠️ *AI-gu kama jawaabin* ${chat.name || chat.phone || ''}\nSabab: ${e.message}${/data policy|No endpoints/i.test(e.message) ? '\n\n👉 OpenRouter: fur openrouter.ai/settings/privacy oo shid "free model publication / training".' : /429|rate|limit|quota/i.test(e.message) ? '\n\n👉 Xaddidkii bilaashka ayaa dhammaaday — sug ama credit ku shub.' : /401|auth|key/i.test(e.message) ? '\n\n👉 API key-ga hubi (dashboard → Habaynta → AI).' : ''}`);
     }
   } catch { /* ignore */ }
 }
@@ -631,6 +631,13 @@ function adminJids() {
   if (!l.length && SES.main.sock?.user?.id) l.push(userPart(SES.main.sock.user.id) + '@s.whatsapp.net');
   return l;
 }
+// 🔒 Arrimaha gaarka ah: kaliya milkiilaha lambarkaas ("Message yourself" ee isla WhatsApp-kaas) — cid kale ma arkayso
+async function toSelf(sid, text) {
+  const x = ses(sid); const me = x.sock?.user?.id;
+  if (!me || !x.wa.connected) return;
+  try { await sendText(userPart(me) + '@s.whatsapp.net', text, sid); } catch { /* ignore */ }
+}
+// 📱 Arrimaha MECO oo kaliya (lacag-bixin, xisaab-xir, fariimaha app-ka MECO) → lambarada ogeysiiska MECO
 async function toAdmins(text) {
   if (!ses(outSid()).wa.connected) { adminJids().forEach((jid) => notifyQueue.push({ jid, text })); return; }
   for (const jid of adminJids()) { try { await sendText(jid, text, 'out'); } catch (e) { notifyQueue.push({ jid, text }); } }
@@ -643,7 +650,7 @@ async function appFallback(x) {
 }
 async function handleAppMessage(x) {
   const who = `${x.customer || 'Macmiil'}${x.phone ? ' · ' + x.phone : ''}`;
-  const tag = x.kind === 'fault' ? '🛠 *CILAD* — ' : x.escalate ? '🙋 ' : '📱 ';
+  const tag = '📱 *APP-KA MECO* · ' + (x.kind === 'fault' ? '🛠 CILAD · ' : x.escalate ? '🙋 ' : '');
   await toAdmins(`${tag}*${x.customer || 'Macmiil'}* — app-ka MECO\n📞 ${x.phone || '—'} · ${x.ticketNo}\n\n${x.text}${x.answered ? `\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_\n${x.answered}` : ''}\n\n_↩️ Reply garee fariintan si aad ugu jawaabto app-ka._`);
   if (x.answered) return;                       // MECO ayaa horay uga jawaabay (salaan, deyn, rasiid, cilad…)
   if (db.settings.appAutoReply === false) return appFallback(x);
@@ -730,10 +737,7 @@ async function customerEngine(chat, key) {
   // 1) Fariintu MECO ma ku saabsan tahay? → caawinaad MECO (xogta dhabta ah)
   if (MECO_KINDS.includes(r.kind)) {
     if (!r.notCustomer) chat.isCustomer = true;
-    if ((r.escalate || r.kind === 'fault') && !chat.test) {
-      chat.needsHuman = true; saveDb(key);
-      toAdmins(`🙋 *${chat.name || chat.phone || 'Qof'}* (${ses(chat.sid).label}${chat.phone ? ' · ' + chat.phone : ''})${r.notCustomer ? '' : ' · macmiil MECO'}${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku:_ ${String(r.text).split('\n')[0]}`).catch(() => {});
-    }
+    if ((r.escalate || r.kind === 'fault') && !chat.test) { chat.needsHuman = true; saveDb(key); }   // 🔒 cid kale looma gudbinayo
     return r.text;
   }
   // Macmiil MECO oo qaabka MECO ku jira → su'aalaha kale AI (xogtiisa)
@@ -756,7 +760,7 @@ function wantsOwner(text, owner, sid) {
 }
 async function secretaryReply(chat, key, text) {
   const owner = ownerName(chat.sid), now = Date.now();
-  const notify = () => { if (!chat.test && (!chat.secNotifiedAt || now - chat.secNotifiedAt > 30 * 60 * 1000)) { chat.secNotifiedAt = now; toAdmins(`📩 *${chat.name || chat.phone || 'Qof'}*${chat.phone ? ' (' + chat.phone + ')' : ''} — ${ses(chat.sid).label}\n\n${text}`).catch(() => {}); } };
+  const notify = () => {};   // 🔒 fariimaha gaarka ah cid kale looma gudbiyo — milkiiluhu telefoonkiisa ayuu ku arkaa
   let answer = null;
   if (!chat.secGreetAt || now - chat.secGreetAt > 24 * 3600 * 1000) {          // hal mar 24-kii saac
     answer = `Soo dhawoow! 👋 Waa xoghayaha ${owner}. Maxaan kaa caawiyaa, mise isaga ayaan kuu gudbiyaa?`;
