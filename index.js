@@ -45,14 +45,37 @@ const stripThink = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, 
 // Model-yada isku day mid mid — haddii mid xaddid (429) ama khalad gaaro, kan xiga
 // Macaamiisha (jawaab qoraal oo kaliya, tools la'aan): model-yo af-Soomaali ku wanaagsan ayaa marka hore la isku dayaa
 const CUSTOMER_MODELS = { openrouter: ['google/gemma-3-27b-it:free', 'meta-llama/llama-3.3-70b-instruct:free'] };
-async function tryModels(fn, forCustomer) {
+// Gemini (af-Soomaali aad u fiican) — model kasta xaddid bilaash ah oo gooni ah ayuu leeyahay
+const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+function geminiKey() {
+  if (db.settings.geminiKey) return db.settings.geminiKey;
+  const k = process.env.GEMINI_API_KEY || '';
+  if (k) return k;
+  return /^AIza/.test(process.env.AI_API_KEY || '') ? process.env.AI_API_KEY : '';
+}
+function aiChain(forCustomer) {
+  const chain = [];
+  const gk = geminiKey();
+  if (gk) chain.push(...GEMINI_MODELS.map((model) => ({ provider: 'gemini', key: gk, model })));
   const cfg = aiCfg();
-  if (!cfg.key) throw new Error('AI key lama gelin — Dashboard → Habaynta → AI');
+  if (cfg.key && !(cfg.provider === 'gemini' && cfg.key === gk)) {
+    const models = forCustomer && !db.settings.aiModel && CUSTOMER_MODELS[cfg.provider] ? [...CUSTOMER_MODELS[cfg.provider], ...cfg.models] : cfg.models;
+    chain.push(...models.map((model) => ({ ...cfg, model })));
+  }
+  return chain;
+}
+const cooldown = new Map();   // model → waqtiga la isku dayi karo (429 kadib)
+async function tryModels(fn, forCustomer) {
+  const chain = aiChain(forCustomer);
+  if (!chain.length) throw new Error('AI key lama gelin — Dashboard → Habaynta → AI');
   let last;
-  const models = forCustomer && !db.settings.aiModel && CUSTOMER_MODELS[cfg.provider] ? [...CUSTOMER_MODELS[cfg.provider], ...cfg.models] : cfg.models;
-  for (const model of models) {
-    try { return stripThink(await fn({ ...cfg, model })); }
-    catch (e) { last = e; console.error(`AI ${cfg.provider}/${model}:`, e.message); }
+  const ready = chain.filter((c) => (cooldown.get(c.provider + c.model) || 0) < Date.now());
+  for (const c of (ready.length ? ready : chain)) {
+    try { return stripThink(await fn(c)); }
+    catch (e) {
+      last = e; console.error(`AI ${c.provider}/${c.model}:`, e.message);
+      if (/429|quota|rate|exhaust/i.test(e.message)) cooldown.set(c.provider + c.model, Date.now() + 10 * 60 * 1000);
+    }
   }
   throw last;
 }
@@ -699,7 +722,7 @@ app.get('/api/status', (req, res) => {
   const chats = Object.values(db.chats);
   res.json({
     connected: wa.connected, qr: wa.qr, me: wa.me, lastError: wa.lastError,
-    botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: `${aiCfg().provider} · ${aiCfg().models[0] || '-'}`,
+    botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: aiChain().slice(0, 1).map((c) => `${c.provider} · ${c.model}`)[0] || '— (key ma jiro)',
     sheet: { configured: !!SHEET_URL, ...knowledge, text: undefined, chars: knowledge.text.length },
     stats: {
       chats: chats.length,
@@ -757,10 +780,12 @@ app.delete('/api/chats/:jid', (req, res) => {
 });
 
 const publicSettings = () => {
-  const { aiKey, ...rest } = db.settings;
+  const { aiKey, geminiKey: _gk, ...rest } = db.settings;
+  const gk = geminiKey();
   const cfg = aiCfg();
   return { ...rest, aiProvider: cfg.provider, aiModel: db.settings.aiModel || '', aiModelDefault: PROVIDERS[cfg.provider].model,
-    aiKeySet: !!cfg.key, aiKeyHint: cfg.key ? '••••' + cfg.key.slice(-4) : '', providers: Object.keys(PROVIDERS) };
+    aiKeySet: !!cfg.key, aiKeyHint: cfg.key ? '••••' + cfg.key.slice(-4) : '', providers: Object.keys(PROVIDERS),
+    geminiSet: !!gk, geminiHint: gk ? '••••' + gk.slice(-4) : '' };
 };
 app.get('/api/settings', (req, res) => res.json(publicSettings()));
 app.post('/api/settings', (req, res) => {
@@ -781,6 +806,7 @@ app.post('/api/settings', (req, res) => {
     ...(s.aiProvider && PROVIDERS[s.aiProvider] && { aiProvider: s.aiProvider }),
     ...(s.aiModel !== undefined && { aiModel: String(s.aiModel).trim() }),
     ...(s.aiKey && !String(s.aiKey).startsWith('••') && { aiKey: String(s.aiKey).trim() }),
+    ...(s.geminiKey !== undefined && !String(s.geminiKey).startsWith('••') && { geminiKey: String(s.geminiKey).trim() }),
   };
   saveDb();
   res.json(publicSettings());

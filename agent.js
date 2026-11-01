@@ -49,7 +49,8 @@ XEERAR:
 - Lacagta ku qor lambar + lacagta (tusaale 1,500 Br). Taariikhda: DD/MM/YYYY.
 - Su'aal kasta oo aysan tools-ka gaarka ahi ka jawaabin → isticmaal "overview" ama "query" (xog kasta waad akhrin kartaa).
 - Macaamiisha bilaha: wareeggoodu waa 30 maalmood laga bilaabo maalinta ay bixiyeen (MonthlyPeriodStart); habeenlaha: wareeg saacadaha ChargeHours.
-- Haddii tool-ku khalad soo celiyo, u sheeg maamulaha sababta.`;
+- Haddii tool-ku khalad soo celiyo, u sheeg maamulaha sababta.
+- Su'aalaha aan MECO ahayn (aqoon guud, xisaab, qoraal, talo, turjumaad, iwm.) — si buuxda oo sax ah uga jawaab aqoontaada, af-Soomaali heer sare ah.`;
 
 export const CUSTOMER_PROMPT = `Waxaad tahay "MECO Bot" — kaaliyaha macaamiisha MECO POWER SUPPLY (koronto, degmada Mustaxiil). Macmiilka ayaa kugula sheekeysanaya app-ka MECO.
 ${SOMALI_STYLE}
