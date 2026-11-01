@@ -123,6 +123,16 @@
         <label>Lambarro bot-ku iska dhaafo (comma u kala saar, tusaale 2519xxxxxxx)</label><input id="sIgnore">
         <div class="row"><button class="btn pri" id="saveSet2">💾 Kaydi</button></div>
       </div>
+      <div class="card" style="grid-column:1/-1;border-color:#1e3a8a">
+        <h3>⚡ MECO POWER SUPPLY — Ogeysiisyada lacag-bixinta</h3>
+        <div style="font-size:13px;color:var(--m)">Mar kasta oo lacag laga qaado macmiil MECO app-ka, WhatsApp ayaa loogu sheegayaa lambarada hoose.</div>
+        <label>Lambarada ogeysiiska helaya (comma u kala saar, tusaale 0911223344, 0922334455)</label><input id="sNotify">
+        <label style="display:flex;align-items:center;gap:8px;color:var(--t);font-size:14px;margin-top:14px"><input type="checkbox" id="sReceipt" style="width:auto"> Macmiilka u dir rasiid WhatsApp ah (haddii lambarkiisu jiro)</label>
+        <div class="row"><button class="btn pri" id="saveNotify">💾 Kaydi</button><button class="btn" id="testNotify">📨 Dir ogeysiis tijaabo ah</button></div>
+        <label>Koodka MECO (Code.gs) ku dheji — URL-ka iyo sirta horay ayaa loogu qoray:</label>
+        <pre id="gasSnippet" style="max-height:340px;user-select:all"></pre>
+        <div class="row"><button class="btn" id="copyGas">📋 Koobiyee koodka</button></div>
+      </div>
       <div class="card">
         <h3>🧪 Tijaabi AI-ga</h3>
         <div style="font-size:13px;color:var(--m)">Qor fariin sidii macmiil oo kale — WhatsApp looma dirayo.</div>
@@ -256,7 +266,52 @@ async function loadSettings() {
   const s = await api('/api/settings');
   $('#sPrompt').value = s.systemPrompt; $('#sPause').value = s.pauseMinutes;
   $('#sBatch').value = s.batchSeconds; $('#sAge').value = s.maxAgeMinutes; $('#sIgnore').value = s.ignoreNumbers;
+  $('#sNotify').value = s.notifyNumbers || ''; $('#sReceipt').checked = !!s.customerReceipts;
+  $('#gasSnippet').textContent = gasCode(location.origin, s.notifySecret);
 }
+function gasCode(url, secret) {
+  return `// ===== MECO → WhatsApp (ku dar Code.gs-ka MECO) =====
+const WA_BOT_URL = '${url}';
+const WA_SECRET  = '${secret}';
+
+/** Ku wac mar kasta oo lacag la qaado. */
+function waNotifyPayment_(p) {
+  // p = { customer, phone, customerId, amount, method, plan, staff, note }
+  try {
+    UrlFetchApp.fetch(WA_BOT_URL + '/api/notify', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      payload: JSON.stringify(Object.assign({ secret: WA_SECRET, type: 'payment' }, p))
+    });
+  } catch (e) { console.log('WhatsApp notify: ' + e); }
+}
+
+/** Fariin qoraal ah (tusaale warbixinta habeenkii). */
+function waNotifyText_(text) {
+  try {
+    UrlFetchApp.fetch(WA_BOT_URL + '/api/notify', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      payload: JSON.stringify({ secret: WA_SECRET, text: text })
+    });
+  } catch (e) { console.log('WhatsApp notify: ' + e); }
+}
+
+/** Tijaabo: Run → testWhatsApp */
+function testWhatsApp() {
+  waNotifyPayment_({ customer: 'Cali Tijaabo', phone: '', amount: 150, method: 'Telebirr', plan: 'Habeenle', staff: 'Bishaar' });
+}
+
+// --- Function-ka lacagta kaydiya gudihiisa, marka safka la qoro kadib, ku dar:
+// waNotifyPayment_({ customer: name, phone: phone, amount: amount, method: method, plan: plan, staff: staffName });`;
+}
+$('#saveNotify').onclick = async () => {
+  await api('/api/settings', { method: 'POST', body: { notifyNumbers: $('#sNotify').value, customerReceipts: $('#sReceipt').checked } });
+  toast('✅ Waa la kaydiyay');
+};
+$('#testNotify').onclick = async () => {
+  try { await $('#saveNotify').onclick(); const r = await api('/api/notify/test', { method: 'POST' }); toast(r.connected ? '📨 Waa la diray — WhatsApp eeg' : '⏳ WhatsApp ma xirna — waa la sugayaa'); }
+  catch (e) { toast('❌ ' + e.message); }
+};
+$('#copyGas').onclick = () => { navigator.clipboard.writeText($('#gasSnippet').textContent); toast('📋 La koobiyeeyay'); };
 const saveSettings = async () => {
   await api('/api/settings', { method: 'POST', body: { systemPrompt: $('#sPrompt').value, pauseMinutes: $('#sPause').value,
     batchSeconds: $('#sBatch').value, maxAgeMinutes: $('#sAge').value, ignoreNumbers: $('#sIgnore').value } });

@@ -64,6 +64,9 @@ let db = {
     batchSeconds: 4,       // sug ilbiriqsiyo si fariimaha isku xiga mar loogu jawaabo
     maxAgeMinutes: 10,     // ha ka jawaabin fariimo ka da' weyn tan
     ignoreNumbers: '',     // lambarro bot-ku iska dhaafo (comma)
+    notifyNumbers: '',     // MECO: lambarada lacag-bixinta loogu sheegayo (comma)
+    notifySecret: '',      // MECO: sirta /api/notify (si toos ah ayaa loo sameeyaa)
+    customerReceipts: false, // MECO: rasiid WhatsApp ah u dir macmiilka
   },
   chats: {},
 };
@@ -71,6 +74,10 @@ let db = {
 const savedSettings = await store.loadSettings();
 db.settings = { ...db.settings, ...(savedSettings || {}) };
 db.chats = await store.loadChats();
+if (!db.settings.notifySecret) {
+  db.settings.notifySecret = crypto.randomBytes(12).toString('hex');
+  await store.saveSettings(db.settings);
+}
 console.log(`🗄️  Supabase: ${Object.keys(db.chats).length} sheeko ayaa la soo raray`);
 
 const dirtyChats = new Set();
@@ -347,6 +354,7 @@ async function startWhatsApp() {
     }
     if (connection === 'open') {
       wa = { connected: true, qr: null, me: sock.user, lastError: null };
+      setTimeout(flushNotifyQueue, 2000);
       console.log(`✅ WhatsApp waa ku xirmay: ${sock.user?.id}`);
     }
     if (connection === 'close') {
@@ -371,6 +379,69 @@ async function startWhatsApp() {
 }
 
 // -------------------------------------------------------------
+//  MECO ogeysiisyada
+// -------------------------------------------------------------
+const notifyQueue = [];
+const toJid = (num) => {
+  let d = String(num || '').replace(/\D/g, '');
+  if (!d) return null;
+  if (d.startsWith('0')) d = '251' + d.slice(1);          // 09xxxxxxxx → 2519xxxxxxxx
+  else if (d.length === 9 && /^[79]/.test(d)) d = '251' + d; // 9xxxxxxxx
+  return d + '@s.whatsapp.net';
+};
+const money = (v) => Number(v || 0).toLocaleString('en-US') + ' Br';
+
+function buildNotifications(b) {
+  const admins = String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean);
+  if (b.to) admins.splice(0, admins.length, ...String(b.to).split(',').map(toJid).filter(Boolean));
+  const out = [];
+  const when = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
+  let text = b.text ? String(b.text) : '';
+  if (!text && b.type === 'payment') {
+    text = [
+      '⚡ *MECO POWER SUPPLY*',
+      '💰 *Lacag la qaaday*',
+      '',
+      `👤 Macmiil: ${b.customer || '-'}${b.phone ? ' (' + b.phone + ')' : ''}`,
+      b.customerId ? `🆔 ID: ${b.customerId}` : '',
+      `💵 Lacag: *${money(b.amount)}*`,
+      `💳 Hab: ${b.method || '-'}`,
+      b.plan ? `📅 Nooca: ${b.plan}` : '',
+      b.staff ? `🧑‍💼 Shaqaale: ${b.staff}` : '',
+      b.note ? `📝 ${b.note}` : '',
+      `🕒 ${when}`,
+    ].filter(Boolean).join('\n');
+  }
+  if (text) admins.forEach((jid) => out.push({ jid, text }));
+  if (b.type === 'payment' && db.settings.customerReceipts && b.phone) {
+    const jid = toJid(b.phone);
+    if (jid) out.push({ jid, text: [
+      '⚡ *MECO POWER SUPPLY*',
+      `Mahadsanid ${b.customer || ''}! ✅`,
+      `Lacagtaada *${money(b.amount)}* (${b.method || ''}) waa la helay.`,
+      `🕒 ${when}`,
+      '_Powering Mustaxiil._',
+    ].join('\n') });
+  }
+  return out;
+}
+
+let notifyBusy = false;
+async function flushNotifyQueue() {
+  if (notifyBusy || !wa.connected) return;
+  notifyBusy = true;
+  try {
+    while (notifyQueue.length && wa.connected) {
+      const it = notifyQueue[0];
+      try { await sendText(it.jid, it.text); notifyQueue.shift(); }
+      catch (e) { console.error('Notify error:', e.message); it.tries = (it.tries || 0) + 1; if (it.tries >= 3) notifyQueue.shift(); else break; }
+      await new Promise((r) => setTimeout(r, 1200)); // ha u dirin si degdeg ah (spam)
+    }
+  } finally { notifyBusy = false; }
+}
+setInterval(flushNotifyQueue, 30 * 1000);
+
+// -------------------------------------------------------------
 //  Admin Dashboard (Express)
 // -------------------------------------------------------------
 const app = express();
@@ -378,6 +449,18 @@ app.use(express.json({ limit: '1mb' }));
 app.set('trust proxy', true);
 // /health — password la'aan; waxaa isticmaala keep-alive (si Render free uusan u seexan)
 app.get('/health', (req, res) => res.json({ ok: true, connected: wa.connected, uptime: Math.round(process.uptime()) }));
+
+// ---- MECO → WhatsApp: ogeysiisyada lacag-bixinta (password la'aan, sir ayaa lagu xaqiijiyaa)
+app.post('/api/notify', async (req, res) => {
+  const b = req.body || {};
+  if (!b.secret || b.secret !== db.settings.notifySecret) return res.status(401).json({ ok: false, error: 'Secret khaldan' });
+  const items = buildNotifications(b);
+  if (!items.length) return res.status(400).json({ ok: false, error: 'Lambar ama fariin lama helin (eeg Habaynta → MECO)' });
+  for (const it of items) notifyQueue.push(it);
+  if (notifyQueue.length > 500) notifyQueue.splice(0, notifyQueue.length - 500);
+  await flushNotifyQueue();
+  res.json({ ok: true, queued: notifyQueue.length, connected: wa.connected });
+});
 app.use((req, res, next) => {
   const hdr = req.headers.authorization || '';
   const [, b64] = hdr.split(' ');
@@ -460,6 +543,8 @@ app.post('/api/settings', (req, res) => {
     ...(s.batchSeconds !== undefined && { batchSeconds: num(s.batchSeconds, 4) }),
     ...(s.maxAgeMinutes !== undefined && { maxAgeMinutes: num(s.maxAgeMinutes, 10) }),
     ...(s.ignoreNumbers !== undefined && { ignoreNumbers: String(s.ignoreNumbers) }),
+    ...(s.notifyNumbers !== undefined && { notifyNumbers: String(s.notifyNumbers) }),
+    ...(s.customerReceipts !== undefined && { customerReceipts: !!s.customerReceipts }),
   };
   saveDb();
   res.json(db.settings);
@@ -480,6 +565,14 @@ app.post('/api/test', async (req, res) => {
     const fake = { name: 'Tijaabo', messages: (req.body.messages || []).map((m) => ({ role: m.role, text: m.text })) };
     res.json({ answer: await askAI(fake) });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/notify/test', async (req, res) => {
+  const items = buildNotifications({ type: 'payment', customer: 'Tijaabo', amount: 150, method: 'Telebirr', plan: 'Habeenle', staff: 'Admin' })
+    .filter((i) => !i.jid.startsWith('251000'));
+  if (!items.length) return res.status(400).json({ error: 'Marka hore geli lambarada ogeysiiska' });
+  notifyQueue.push(...items); await flushNotifyQueue();
+  res.json({ ok: true, connected: wa.connected });
 });
 
 app.post('/api/logout', async (req, res) => {
