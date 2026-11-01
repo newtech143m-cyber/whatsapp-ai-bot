@@ -200,7 +200,8 @@ async function loadStatus() {
       <div class="stat">Sheekooyinka guud <b>${s.stats.chats}</b></div>
       <div class="stat">Fariimaha macaamiisha maanta <b>${s.stats.today}</b></div>
       <div class="stat">Kuwa adiga ku sugaya <b>${s.stats.needsHuman}</b></div>
-      <div class="stat">AI model <b>${esc(s.model)}</b></div>`;
+      <div class="stat">AI model <b>${esc(s.model)}</b></div>
+      ${s.lastAiError ? `<div class="stat" style="display:block;color:var(--red)">⚠️ AI khaladkii u dambeeyay:<br><small style="color:var(--m)">${esc(s.lastAiError)}</small></div>` : ''}`;
     $('#sheetInfo').innerHTML = !s.sheet.configured ? '⚠️ SHEET_WEBAPP_URL lama gelin (.env)'
       : s.sheet.error ? '❌ Khalad: ' + esc(s.sheet.error)
       : `✅ ${s.sheet.rows ?? 0} saf · ${s.sheet.chars} xaraf · la cusbooneysiiyay ${s.sheet.updated ? new Date(s.sheet.updated).toLocaleTimeString() : '—'}`;

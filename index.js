@@ -186,13 +186,27 @@ function buildHistory(chat) {
   return out;
 }
 
+// Macmiilka WhatsApp-ka → xogtiisa MECO (lambarka telefoonka), 5 daqiiqo cache
+const ctxCache = new Map();
+async function mecoContext(phone) {
+  if (!phone || !db.settings.mecoUrl) return null;
+  const c = ctxCache.get(phone);
+  if (c && Date.now() - c.at < 5 * 60 * 1000) return c.ctx;
+  const r = await mecoCall('customer_context', { phone });
+  const ctx = r && r.found ? r.context : null;
+  ctxCache.set(phone, { at: Date.now(), ctx });
+  return ctx;
+}
+
 async function askAI(chat) {
   const messages = buildHistory(chat);
   if (!messages.length || messages[messages.length - 1].role !== 'user') return null;
   const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa' });
+  const ctx = await mecoContext(chat.phone).catch(() => null);
   const system = [
     db.settings.systemPrompt,
     SOMALI_STYLE,
+    ctx ? `\n${CUSTOMER_PROMPT}\nMacmiilkan waa macmiil MECO ah. ACCOUNT (xogtiisa dhabta ah — ku jawaab si sax ah):\n${JSON.stringify(ctx, null, 1).slice(0, 6000)}` : '',
     `\nWaqtiga hadda: ${now}`,
     chat.name ? `Magaca macmiilka (WhatsApp): ${chat.name}` : '',
     knowledge.text ? `\n=== MACLUUMAADKA GANACSIGA (Google Sheet) ===\n${knowledge.text}` : '',
@@ -230,7 +244,7 @@ async function callAI({ provider, model: AI_MODEL, key: AI_KEY, base }, system, 
   }
   // OpenAI-compatible: zen, groq, openrouter, openai
   const j = await postJSON(`${base}/chat/completions`,
-    { Authorization: `Bearer ${AI_KEY}` },
+    { Authorization: `Bearer ${AI_KEY}`, 'HTTP-Referer': 'https://meco-power-supply.vercel.app', 'X-Title': 'MECO WhatsApp Bot' },
     { model: AI_MODEL, max_tokens: 600, temperature: 0.6, messages: [{ role: 'system', content: system }, ...messages] });
   const text = stripThink(j.choices?.[0]?.message?.content || '');
   if (!text) throw new Error('jawaab madhan');
@@ -286,6 +300,22 @@ function scheduleReply(jid) {
     Math.max(1, db.settings.batchSeconds) * 1000));
 }
 
+// AI-gu haddii uu fashilmo: macmiilka u sheeg in fariinta la helay, adigana WhatsApp kuugu sheeg sababta
+let lastAiAlert = 0;
+async function aiFailed(chat, jid, e) {
+  db.settings.lastAiError = `${new Date().toISOString()} · ${e.message}`.slice(0, 400); saveDb();
+  try {
+    if (!chat.fallbackAt || Date.now() - chat.fallbackAt > 30 * 60 * 1000) {
+      const t = 'Waad salaaman tahay! Fariintaada waa la helay ✅. Dhowaan ayaa laguu soo jawaabi doonaa.';
+      await sendText(jid, t); addMessage(chat, 'assistant', t); chat.fallbackAt = Date.now(); saveDb(jid);
+    }
+    if (Date.now() - lastAiAlert > 10 * 60 * 1000) {
+      lastAiAlert = Date.now();
+      await toAdmins(`⚠️ *AI-gu kama jawaabin* ${chat.name || chat.phone || ''}\nSabab: ${e.message}${/data policy|No endpoints/i.test(e.message) ? '\n\n👉 OpenRouter: fur openrouter.ai/settings/privacy oo shid "free model publication / training".' : /429|rate|limit|quota/i.test(e.message) ? '\n\n👉 Xaddidkii bilaashka ayaa dhammaaday — sug ama credit ku shub.' : /401|auth|key/i.test(e.message) ? '\n\n👉 API key-ga hubi (dashboard → Habaynta → AI).' : ''}`);
+    }
+  } catch { /* ignore */ }
+}
+
 async function replyTo(jid) {
   const chat = db.chats[jid];
   if (!chat || !db.settings.botEnabled || isPaused(chat)) return;
@@ -315,6 +345,7 @@ async function replyTo(jid) {
     }
   } catch (e) {
     console.error('Reply error:', e.message);
+    aiFailed(chat, jid, e);
   } finally {
     busy.delete(jid);
     sock?.sendPresenceUpdate('paused', jid).catch(() => {});
@@ -458,6 +489,15 @@ async function execTool(name, args) {
     await sendText(jid, receiptText(d));
     return { sent: true, to: d.customer.Phone, customer: d.customer.Name, receipt: d.payment.Receipt, amount: d.payment.Amount };
   }
+  if (name === 'send_pdf') {
+    const d = await mecoCall('pdf', { kind: args.kind || 'monthly', from: args.from, to: args.to, filter: args.filter });
+    if (d.error) return d;
+    if (!d.b64) return { error: 'PDF lama helin' };
+    const jid = currentAdminJid || adminJids()[0];
+    const id = newId(); ourIds.add(id);
+    await sock.sendMessage(jid, { document: Buffer.from(d.b64, 'base64'), mimetype: 'application/pdf', fileName: d.name || 'MECO.pdf' }, { messageId: id });
+    return { sent: true, file: d.name };
+  }
   if (name === 'reply_customer_app') return mecoCall('chat_reply', { ticketNo: args.ticketNo, query: args.query, body: args.message, from: 'admin' });
   if (!MECO_TOOLS.some((t) => t.name === name)) return { error: 'Tool lama yaqaan: ' + name };
   return mecoCall(name, args);
@@ -498,6 +538,7 @@ async function handleAppMessage(x) {
   await toAdmins(`🤖 *MECO Bot → ${x.customer}* (${x.ticketNo})\n${answer}${r.error ? '\n\n⚠️ App-ka lama gaarsiin: ' + r.error : ''}${escalate ? '\n\n🙋 *Wuxuu u baahan yahay adiga* — Reply garee fariinta macmiilka si aad ugu jawaabto.' : ''}`);
 }
 
+let currentAdminJid = null;
 const adminHistory = new Map();
 function quotedText(m) {
   const msg = m.message || {};
@@ -515,6 +556,7 @@ async function handleAdmin(jid, text, m) {
     const r = await mecoCall('chat_reply', { ticketNo: ck.toUpperCase(), body, from: 'admin' });
     return sendText(jid, r.error ? '⚠️ Lama dirin: ' + r.error : `✅ Waa loo diray *${r.customer}* (app-ka · ${r.ticketNo})`);
   }
+  currentAdminJid = jid;
   const h = adminHistory.get(jid) || [];
   if (/^\/?(reset|cusub|clear)$/i.test(text.trim())) { adminHistory.delete(jid); return sendText(jid, '🔄 Sheekada waa la tirtiray.'); }
   h.push({ role: 'user', content: text });
@@ -641,7 +683,7 @@ app.get('/api/status', (req, res) => {
   const chats = Object.values(db.chats);
   res.json({
     connected: wa.connected, qr: wa.qr, me: wa.me, lastError: wa.lastError,
-    botEnabled: db.settings.botEnabled, model: `${aiCfg().provider} · ${aiCfg().models[0] || '-'}`,
+    botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: `${aiCfg().provider} · ${aiCfg().models[0] || '-'}`,
     sheet: { configured: !!SHEET_URL, ...knowledge, text: undefined, chars: knowledge.text.length },
     stats: {
       chats: chats.length,

@@ -24,6 +24,8 @@ export const MECO_TOOLS = [
     parameters: { type: 'object', properties: { sheet: { type: 'string' }, contains: { type: 'string', description: 'Qoraal lagu raadinayo (magac, lambar, rasiid…)' }, field: { type: 'string' }, equals: { type: 'string' }, from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD' }, limit: { type: 'number' } }, required: ['sheet'] } },
   { name: 'reply_customer_app', description: 'U dir fariin macmiil gudaha app-ka MECO (sheekada WhatsApp Bot-ka ee app-ka). Kaliya marka maamuluhu codsado.',
     parameters: { type: 'object', properties: { query: { type: 'string', description: 'Magaca/telefoonka macmiilka' }, ticketNo: { type: 'string', description: 'CK-xxxxx haddii la yaqaan' }, message: { type: 'string' } }, required: ['message'] } },
+  { name: 'send_pdf', description: 'U soo dir maamulaha PDF WhatsApp ahaan. kind: monthly (macaamiisha bilaha — bilaabay, dhammaanaya, maalmo haray, deyn), debtors (deyn-leyaasha), payments (lacag-bixinta muddo), closings, treasury, invoices.',
+    parameters: { type: 'object', properties: { kind: { type: 'string', enum: ['monthly', 'debtors', 'payments', 'closings', 'treasury', 'invoices'] }, from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD' }, filter: { type: 'string', enum: ['due', 'paid'], description: 'monthly: due = deyn leh, paid = bixiyay' } }, required: ['kind'] } },
   { name: 'send_receipt', description: 'U DIR macmiilka rasiidkiisa WhatsApp ahaan (bixintii u dambeysay ama rasiid lambar gaar ah). Kaliya marka admin-ku si cad u codsado.',
     parameters: { type: 'object', properties: { query: { type: 'string', description: 'Magaca/telefoonka macmiilka' }, id: { type: 'string' }, receipt: { type: 'string', description: 'RC-xxxxx (ikhtiyaari)' } } } },
 ];
@@ -43,6 +45,7 @@ XEERAR:
 - "Caawa ma laga qaaday?" → PaidThisCycle (true = haa, wareeggan waa laga qaaday; muuji goorta, lacagta iyo cidda qaaday).
 - Haddii magacu macaamiil badan la mid yahay, liiska u soo bandhig oo weydii kee.
 - send_receipt kaliya marka maamuluhu si cad u yiraahdo "u dir rasiidka".
+- PDF (bilaha, deyn-leyaal, lacag-bixin…) → send_pdf; WhatsApp ayuu si toos ah ugu imanayaa maamulaha.
 - Lacagta ku qor lambar + lacagta (tusaale 1,500 Br). Taariikhda: DD/MM/YYYY.
 - Su'aal kasta oo aysan tools-ka gaarka ahi ka jawaabin → isticmaal "overview" ama "query" (xog kasta waad akhrin kartaa).
 - Macaamiisha bilaha: wareeggoodu waa 30 maalmood laga bilaabo maalinta ay bixiyeen (MonthlyPeriodStart); habeenlaha: wareeg saacadaha ChargeHours.
