@@ -56,9 +56,8 @@ function geminiKey() {
 }
 // 🔬 Tijaabada AI-yada bilaashka ah: bot-ku wuu tijaabiyaa (boot + 3 saac kasta), kuwa shaqeeya ayaa la hormariyaa
 const DIAG_CANDIDATES = [
-  ...['openai', 'openai-fast', 'openai-large', 'gemini', 'mistral', 'deepseek', 'llama', 'qwen-coder'].map((m) => ({ provider: 'pollinations', key: 'free', base: 'https://text.pollinations.ai/openai', model: m })),
-  ...['openai', 'gemini', 'mistral'].map((m) => ({ provider: 'pollget', key: 'free', model: m })),
-  ...['meta-llama/llama-3.3-70b-instruct:free', 'nousresearch/hermes-3-llama-3.1-405b:free', 'google/gemma-3-27b-it:free', 'deepseek/deepseek-chat-v3-0324:free', 'qwen/qwen3-235b-a22b:free', 'mistralai/mistral-small-3.2-24b-instruct:free', 'z-ai/glm-4.5-air:free', 'moonshotai/kimi-k2:free', 'openrouter/free'].map((m) => ({ provider: 'openrouter', base: 'https://openrouter.ai/api/v1', model: m })),
+  { provider: 'pollinations', key: 'free', base: 'https://text.pollinations.ai/openai', model: 'openai' },   // ✅ sax + af-Soomaali fiican (1 jawaab / 45s)
+  { provider: 'openrouter', base: 'https://openrouter.ai/api/v1', model: 'openrouter/free' },              // kayd (tayo hoose)
 ];
 async function runAiDiag() {
   const out = [], orKey = db.settings.aiProvider === 'openrouter' ? db.settings.aiKey : '';
@@ -76,7 +75,7 @@ async function runAiDiag() {
   console.log('🔬 AI diag:', out.filter((x) => x.ok).map((x) => x.p + '/' + x.m).join(', ') || 'midna ma shaqeyn');
 }
 setTimeout(() => runAiDiag().catch(() => {}), 25000);
-setInterval(() => runAiDiag().catch(() => {}), 3 * 3600 * 1000);
+
 function aiChain(forCustomer) {
   // Haddii maamuluhu doortay (aiPrefer: "provider/model,…") ama tijaabadu jirto → kuwa shaqeeyay oo kaliya, kan ugu dhakhsaha badan marka hore
   const pref = String(db.settings.aiPrefer || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -84,8 +83,10 @@ function aiChain(forCustomer) {
   const orKey = db.settings.aiProvider === 'openrouter' ? db.settings.aiKey : '';
   const mk = (p, m) => { const c = DIAG_CANDIDATES.find((x) => x.provider === p && x.model === m); return c ? { ...c, key: p === 'openrouter' ? orKey : c.key } : null; };
   if (pref.length) { const l = pref.map((x) => { const i = x.indexOf('/'); return mk(x.slice(0, i), x.slice(i + 1)); }).filter((c) => c && c.key); if (l.length) return l; }
-  if (diag.length) { const l = diag.sort((a, b) => a.ms - b.ms).map((x) => mk(x.p, x.m)).filter((c) => c && c.key); if (l.length) return l; }
-  const chain = [];
+  const chain = [mk('pollinations', 'openai')];
+  const gk0 = geminiKey(); if (gk0) chain.push(...GEMINI_MODELS.map((model) => ({ provider: 'gemini', key: gk0, model })));
+  const fr = mk('openrouter', 'openrouter/free'); if (fr && fr.key) chain.push(fr);
+  if (chain.length) return chain;
   // 1) Pollinations — bilaash, key la'aan (GPT family, af-Soomaali wanaagsan)
   if (db.settings.pollinations !== false) chain.push(...PROVIDERS.pollinations.model.split(',').map((model) => ({ provider: 'pollinations', key: 'free', base: PROVIDERS.pollinations.base, model })));
   const gk = geminiKey();
@@ -108,7 +109,8 @@ async function tryModels(fn, forCustomer) {
     catch (e) {
       last = e; console.error(`AI ${c.provider}/${c.model}:`, e.message);
       db.settings.aiErrors = [{ t: new Date().toISOString(), m: c.provider + '/' + c.model, e: String(e.message).slice(0, 140) }, ...(db.settings.aiErrors || [])].slice(0, 15); saveDb();
-      if (/429|quota|rate|exhaust|queue/i.test(e.message)) cooldown.set(c.provider + c.model, Date.now() + (c.provider === 'pollinations' ? 20 * 1000 : 10 * 60 * 1000));
+      if (/402|limit reached/i.test(e.message) && c.provider === 'pollinations') pollNext = Date.now() + 47000;
+      else if (/429|quota|rate|exhaust|queue/i.test(e.message)) cooldown.set(c.provider + c.model, Date.now() + 10 * 60 * 1000);
     }
   }
   throw last;
@@ -291,7 +293,16 @@ async function postJSON(url, headers, body) {
   return j;
 }
 
+// Pollinations: hal jawaab 45-kii ilbiriqsi (IP kasta) → waqti ayaa loo qabsanayaa; haddii sugitaanku > 55s, kan xiga (kayd)
+let pollNext = 0;
+async function pollSlot() {
+  const now = Date.now(), start = Math.max(now, pollNext);
+  if (start - now > 55000) throw new Error('pollinations: mashquul (xaddid 45s)');
+  pollNext = start + 47000;
+  if (start > now) await new Promise((r) => setTimeout(r, start - now));
+}
 async function callAI({ provider, model: AI_MODEL, key: AI_KEY, base }, system, messages) {
+  if (provider === 'pollinations') await pollSlot();
   if (provider === 'pollget') {   // Pollinations qaabka GET (key la'aan)
     const convo = messages.slice(-8).map((m) => (m.role === 'user' ? 'Qofka: ' : 'Adiga: ') + m.content).join('\n');
     const url = `https://text.pollinations.ai/${encodeURIComponent(convo + '\nAdiga:')}?model=${encodeURIComponent(AI_MODEL)}&system=${encodeURIComponent(system.slice(0, 3500))}&private=true`;
@@ -683,7 +694,7 @@ async function adminEngine(jid, text, sid = 'main') {
     }
     if (r.kind === 'unknown') {   // su'aal guud ama mid aan maskaxdu garan → AI (tools MECO + aqoon guud)
       try {
-        const ans = await tryModels((cfg) => runAgent({ ...cfg, system: ADMIN_PROMPT + `\nWaqtiga hadda: ${nowTxt()} (Africa/Addis_Ababa).`, history: [{ role: 'user', content: text }], tools: MECO_TOOLS, exec: execTool }));
+        const ans = await tryModels((cfg) => runAgent({ ...cfg, beforeCall: cfg.provider === 'pollinations' ? pollSlot : undefined, system: ADMIN_PROMPT + `\nWaqtiga hadda: ${nowTxt()} (Africa/Addis_Ababa).`, history: [{ role: 'user', content: text }], tools: MECO_TOOLS, exec: execTool }));
         if (ans) return sendText(jid, '🤖 ' + ans, sid);
       } catch (e) { console.error('Admin AI:', e.message); }
     }
@@ -795,7 +806,7 @@ async function handleAdmin(jid, text, m, sid = 'main') {
   presence(sid, 'composing', jid);
   try {
     const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
-    const answer = await tryModels((cfg) => runAgent({ ...cfg,
+    const answer = await tryModels((cfg) => runAgent({ ...cfg, beforeCall: cfg.provider === 'pollinations' ? pollSlot : undefined,
       system: ADMIN_PROMPT + `\nWaqtiga hadda: ${now} (Africa/Addis_Ababa).`, history: h, tools: MECO_TOOLS, exec: execTool }));
     const reply = answer || '…';
     h.push({ role: 'assistant', content: reply });
@@ -1044,7 +1055,7 @@ app.post('/api/test', async (req, res) => {
 app.post('/api/agent/test', async (req, res) => {
   try {
     const h = (req.body.messages || []).map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
-    const answer = await tryModels((cfg) => runAgent({ ...cfg,
+    const answer = await tryModels((cfg) => runAgent({ ...cfg, beforeCall: cfg.provider === 'pollinations' ? pollSlot : undefined,
       system: ADMIN_PROMPT, history: h, tools: MECO_TOOLS.filter((t) => t.name !== 'send_receipt'), exec: execTool }));
     res.json({ answer });
   } catch (e) { res.status(500).json({ error: e.message }); }

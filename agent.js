@@ -96,7 +96,7 @@ async function postJSON(url, headers, body, label) {
  * Agent loop (function calling) — gemini | groq/openrouter/openai | claude
  * history: [{role:'user'|'assistant', content}]
  */
-export async function runAgent({ provider, model, key, base, system, history, tools, exec, maxSteps = 6 }) {
+export async function runAgent({ provider, model, key, base, system, history, tools, exec, maxSteps = 6, beforeCall }) {
   if (provider === 'gemini') {
     const contents = history.map((m) => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] }));
     const decl = [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: toGeminiSchema(t.parameters) })) }];
@@ -143,6 +143,7 @@ export async function runAgent({ provider, model, key, base, system, history, to
   const messages = [{ role: 'system', content: system }, ...history.map((m) => ({ role: m.role, content: m.content }))];
   const otools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
   for (let step = 0; step < maxSteps; step++) {
+    if (beforeCall) await beforeCall();
     const j = await postJSON(`${base}/chat/completions`, { Authorization: `Bearer ${key}` },
       { model, max_tokens: 1500, temperature: 0.2, messages, tools: otools, tool_choice: 'auto' }, provider);
     const msg = j.choices?.[0]?.message || {};
