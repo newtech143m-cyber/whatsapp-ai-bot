@@ -25,7 +25,7 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 // Dashboard-ka (Habaynta → AI) ayaa laga beddeli karaa; env-ku waa default.
 const ENV_PROVIDER = (process.env.AI_PROVIDER || 'zen').toLowerCase();
 const PROVIDERS = {
-  pollinations: { model: 'openai,openai-fast,mistral', base: 'https://text.pollinations.ai/openai', keyless: true },   // bilaash, key la'aan (GPT)
+  pollinations: { model: 'gemini,openai,openai-large,mistral', base: 'https://text.pollinations.ai/openai', keyless: true },   // bilaash, key la'aan (GPT)
   zen:        { model: 'deepseek-v4-flash-free,qwen3.6-plus-free,mimo-v2.5-free,big-pickle', base: 'https://opencode.ai/zen/v1' },
   gemini:     { model: 'gemini-2.5-flash' },
   groq:       { model: 'llama-3.3-70b-versatile', base: 'https://api.groq.com/openai/v1' },
@@ -681,6 +681,14 @@ async function customerEngine(chat, key) {
   // 2) Wax kale (salaan, sheeko gaar ah, su'aal aan MECO ahayn) → xoghaye
   return secretaryReply(chat, key, text);
 }
+// Qofku ma rabaa milkiilaha? (gudbi, isaga, "waxaan u baahnaa Duale", "xog ka rabay", haa/ok…)
+function wantsOwner(text, owner, sid) {
+  const t = ' ' + String(text).toLowerCase() + ' ';
+  if (/ila sheekee|ila sheekayso|ila hadal|adiga ila|adigu ii|su'aal ayaan ku/i.test(t)) return false;
+  const names = [owner, cleanName(ses(sid).sock?.user?.name), 'ducaale', 'duale', 'dualle', 'maamulaha', 'milkiilaha'].filter(Boolean).map((n) => n.toLowerCase());
+  if (names.some((n) => t.includes(n))) return true;
+  return /gudbi|isaga|asaga|u sheeg|ii sheeg|waan sugayaa|u baahn|ubaahn|rabaa|rabay|la hadlo|la hadli|wac|wici|^\s*(haa|haye|ok|okey|okay|hagaag|waa yahay|waayahay)\s*[.!]*\s*$/i.test(t);
+}
 async function secretaryReply(chat, key, text) {
   const owner = ownerName(chat.sid), now = Date.now();
   const notify = () => { if (!chat.test && (!chat.secNotifiedAt || now - chat.secNotifiedAt > 30 * 60 * 1000)) { chat.secNotifiedAt = now; toAdmins(`📩 *${chat.name || chat.phone || 'Qof'}*${chat.phone ? ' (' + chat.phone + ')' : ''} — ${ses(chat.sid).label}\n\n${text}`).catch(() => {}); } };
@@ -688,7 +696,7 @@ async function secretaryReply(chat, key, text) {
   if (!chat.secGreetAt || now - chat.secGreetAt > 24 * 3600 * 1000) {          // hal mar 24-kii saac
     answer = `Soo dhawoow! 👋 Waa xoghayaha ${owner}. Maxaan kaa caawiyaa, mise isaga ayaan kuu gudbiyaa?`;
     chat.secGreetAt = now; chat.secForwardedAt = 0;
-  } else if (/gudbi|isaga ii|isaga u|u sheeg|waan sugayaa|^\s*(haa|haye|ok|okey|okay|hagaag)\s*[.!]*\s*$/i.test(text) && !/ila sheekee|ila hadal|adiga/i.test(text)) {
+  } else if (wantsOwner(text, owner, chat.sid)) {
     if (!chat.secForwardedAt) { answer = `Waan u gudbiyay ✅ — ${owner} ayaa dhowaan kuu soo jawaabi doona.`; chat.secForwardedAt = now; chat.secNotifiedAt = 0; }
   } else {
     // "adiga ila sheekayso" ama su'aal guud → AI (aqoon guud, diin, taariikh…) — si sax ah oo kooban
