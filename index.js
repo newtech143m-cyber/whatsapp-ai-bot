@@ -637,10 +637,16 @@ async function toSelf(sid, text) {
   if (!me || !x.wa.connected) return;
   try { await sendText(userPart(me) + '@s.whatsapp.net', text, sid); } catch { /* ignore */ }
 }
-// 📱 Arrimaha MECO oo kaliya (lacag-bixin, xisaab-xir, fariimaha app-ka MECO) → lambarada ogeysiiska MECO
+// Qofka helaya: laga diro WhatsApp aan isaga ahayn (si uu cod/pop-up u helo) — WhatsApp 2 caadi ahaan, WhatsApp 1 haddii qofku yahay WhatsApp 2
+function pickSid(jid) {
+  const o = outSid(), other = o === 's2' ? 'main' : 's2';
+  if (userPart(jid) === userPart(ses(o).sock?.user?.id) && ses(other).wa.connected) return other;
+  return o;
+}
+// 📱 Arrimaha MECO oo kaliya (lacag-bixin, xisaab-xir, warbixinta, fariimaha app-ka MECO) → lambarada ogeysiiska MECO (dhammaantood)
 async function toAdmins(text) {
   if (!ses(outSid()).wa.connected) { adminJids().forEach((jid) => notifyQueue.push({ jid, text })); return; }
-  for (const jid of adminJids()) { try { await sendText(jid, text, 'out'); } catch (e) { notifyQueue.push({ jid, text }); } }
+  for (const jid of adminJids()) { try { await sendText(jid, text, pickSid(jid)); } catch (e) { notifyQueue.push({ jid, text }); } }
 }
 const appFallbackAt = new Map();
 async function appFallback(x) {
@@ -881,7 +887,7 @@ async function flushNotifyQueue() {
   try {
     while (notifyQueue.length && ses(outSid()).wa.connected) {
       const it = notifyQueue[0];
-      try { await sendText(it.jid, it.text, 'out'); notifyQueue.shift(); }
+      try { await sendText(it.jid, it.text, pickSid(it.jid)); notifyQueue.shift(); }
       catch (e) { console.error('Notify error:', e.message); it.tries = (it.tries || 0) + 1; if (it.tries >= 3) notifyQueue.shift(); else break; }
       await new Promise((r) => setTimeout(r, 1200)); // ha u dirin si degdeg ah (spam)
     }
