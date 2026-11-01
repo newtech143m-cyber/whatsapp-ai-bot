@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="so">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhatsApp AI Bot — Dashboard</title>
+<style>
+  :root{--g:#25D366;--gd:#075E54;--bg:#0b141a;--p:#111b21;--p2:#202c33;--line:#2a3942;--t:#e9edef;--m:#8696a0;--me:#005c4b;--bot:#1d3a4a;--warn:#f59e0b;--red:#ef4444}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--t);height:100vh;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;background:var(--p2);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  header h1{font-size:17px;font-weight:600;flex:1;min-width:150px}
+  .pill{font-size:12px;padding:4px 10px;border-radius:99px;background:var(--p);border:1px solid var(--line);white-space:nowrap}
+  .pill.ok{color:var(--g);border-color:var(--g)} .pill.bad{color:var(--red);border-color:var(--red)} .pill.warn{color:var(--warn);border-color:var(--warn)}
+  .switch{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;user-select:none}
+  .switch input{display:none}
+  .switch span{width:40px;height:22px;background:#3b4a54;border-radius:99px;position:relative;transition:.2s}
+  .switch span::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.2s}
+  .switch input:checked+span{background:var(--g)} .switch input:checked+span::after{left:21px}
+  nav{display:flex;gap:4px}
+  nav button,.btn{background:var(--p);color:var(--t);border:1px solid var(--line);padding:7px 12px;border-radius:8px;cursor:pointer;font-size:13px}
+  nav button.on{background:var(--gd);border-color:var(--gd)}
+  .btn.pri{background:var(--g);color:#06251a;border-color:var(--g);font-weight:600}
+  .btn.red{color:var(--red);border-color:var(--red)}
+  main{flex:1;display:flex;min-height:0}
+  .view{display:none;flex:1;min-height:0} .view.on{display:flex}
+  /* chats */
+  #list{width:340px;border-right:1px solid var(--line);overflow-y:auto;background:var(--p)}
+  #search{width:calc(100% - 20px);margin:10px;padding:9px 12px;border-radius:8px;border:none;background:var(--p2);color:var(--t)}
+  .ci{display:flex;gap:10px;padding:11px 14px;border-bottom:1px solid #1b262d;cursor:pointer}
+  .ci:hover,.ci.sel{background:var(--p2)}
+  .av{width:42px;height:42px;border-radius:50%;background:#2f4a57;display:grid;place-items:center;font-weight:600;flex-shrink:0}
+  .ci .b{flex:1;min-width:0} .ci .r1{display:flex;justify-content:space-between;gap:6px}
+  .ci .nm{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ci .tm{font-size:11px;color:var(--m);white-space:nowrap}
+  .ci .lm{font-size:13px;color:var(--m);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .tags{display:flex;gap:4px;margin-top:4px} .tag{font-size:10px;padding:1px 6px;border-radius:4px}
+  .tag.h{background:#7c2d12;color:#fed7aa} .tag.p{background:#3b4a54;color:#cbd5e1} .tag.u{background:var(--g);color:#06251a;font-weight:700}
+  #conv{flex:1;display:flex;flex-direction:column;min-width:0}
+  #convHead{padding:10px 16px;background:var(--p2);display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line)}
+  #convHead .nm{font-weight:600} #convHead .ph{font-size:12px;color:var(--m)}
+  #msgs{flex:1;overflow-y:auto;padding:18px 6%;display:flex;flex-direction:column;gap:6px;background:#0b141a}
+  .m{max-width:72%;padding:7px 10px 18px;border-radius:8px;font-size:14px;line-height:1.4;white-space:pre-wrap;word-wrap:break-word;position:relative}
+  .m.user{background:var(--p2);align-self:flex-start}
+  .m.assistant{background:var(--bot);align-self:flex-end} .m.owner{background:var(--me);align-self:flex-end}
+  .m .who{font-size:10px;font-weight:700;margin-bottom:2px;opacity:.75}
+  .m .t{position:absolute;right:8px;bottom:3px;font-size:10px;color:var(--m)}
+  #compose{display:flex;gap:8px;padding:10px 14px;background:var(--p2)}
+  #compose textarea{flex:1;resize:none;height:42px;padding:10px;border-radius:8px;border:none;background:#2a3942;color:var(--t);font:inherit}
+  .empty{margin:auto;color:var(--m);text-align:center;padding:30px;line-height:1.7}
+  /* panels */
+  .panel{flex:1;overflow-y:auto;padding:24px;display:grid;gap:18px;align-content:start;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+  .card{background:var(--p);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .card h3{font-size:15px;margin-bottom:12px}
+  .card label{display:block;font-size:12px;color:var(--m);margin:12px 0 5px}
+  .card input,.card textarea{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);background:var(--p2);color:var(--t);font:inherit}
+  .card textarea{min-height:220px;resize:vertical;font-size:13px}
+  .card .row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .stat{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1b262d;font-size:14px}
+  .stat b{color:var(--g)}
+  #qrBox{text-align:center} #qrBox img{background:#fff;padding:10px;border-radius:10px;width:260px;max-width:100%}
+  pre{white-space:pre-wrap;font-size:12px;background:var(--p2);padding:10px;border-radius:8px;max-height:260px;overflow:auto;color:#cbd5e1}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--gd);padding:10px 18px;border-radius:8px;font-size:14px;opacity:0;transition:.3s;pointer-events:none}
+  .toast.on{opacity:1}
+  @media(max-width:760px){#list{width:100%}#conv{display:none}.mob-conv #list{display:none}.mob-conv #conv{display:flex}.back{display:inline-block!important}}
+  .back{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>💬 WhatsApp AI Bot</h1>
+  <span id="waPill" class="pill">…</span>
+  <span id="humanPill" class="pill warn" style="display:none"></span>
+  <label class="switch" title="Bot-ka oo dhan shid/dami"><input type="checkbox" id="botToggle"><span></span>Bot</label>
+  <nav>
+    <button data-v="chats" class="on">Sheekooyinka</button>
+    <button data-v="connect">Xiriirka</button>
+    <button data-v="settings">Habaynta</button>
+  </nav>
+</header>
+
+<main>
+  <!-- CHATS -->
+  <section class="view on" id="v-chats">
+    <div id="list"><input id="search" placeholder="🔍 Raadi magac ama lambar…"><div id="items"></div></div>
+    <div id="conv">
+      <div class="empty" id="noSel">Dooro sheeko bidixda ka muuqata.<br><small>Fariimaha cusub si toos ah ayay u soo muuqdaan.</small></div>
+    </div>
+  </section>
+
+  <!-- CONNECT -->
+  <section class="view" id="v-connect">
+    <div class="panel">
+      <div class="card" id="qrBox"></div>
+      <div class="card"><h3>📊 Tirakoob</h3><div id="stats"></div></div>
+      <div class="card">
+        <h3>📄 Google Sheet — Aqoonta bot-ka</h3>
+        <div id="sheetInfo" style="font-size:13px;color:var(--m)"></div>
+        <div class="row"><button class="btn pri" id="refreshKb">🔄 Dib u soo rar hadda</button></div>
+        <label>Waxa bot-ku hadda ka akhriyay Sheet-ka:</label>
+        <pre id="kbPreview">—</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section class="view" id="v-settings">
+    <div class="panel">
+      <div class="card" style="grid-column:1/-1">
+        <h3>🧠 Tilmaamaha AI-ga (System Prompt)</h3>
+        <div style="font-size:13px;color:var(--m)">Halkan u sheeg bot-ka cidda uu yahay iyo sida uu u hadlo. Macluumaadka ganacsiga (qiimaha, saacadaha…) ku qor Google Sheet-ka → <b>Aqoonta</b>.</div>
+        <textarea id="sPrompt"></textarea>
+        <div class="row">
+          <button class="btn pri" id="saveSet">💾 Kaydi</button>
+          <button class="btn" id="resetPrompt">↺ Ku celi kii asalka</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>⚙️ Dejinta</h3>
+        <label>Markaad adigu jawaabto, bot-ku intee daqiiqo buu aamusaa?</label><input type="number" id="sPause" min="0">
+        <label>Ilbiriqsiyo la sugo si fariimo isku xiga hal mar loogu jawaabo</label><input type="number" id="sBatch" min="1">
+        <label>Ha ka jawaabin fariimo ka da' weyn (daqiiqo)</label><input type="number" id="sAge" min="1">
+        <label>Lambarro bot-ku iska dhaafo (comma u kala saar, tusaale 2519xxxxxxx)</label><input id="sIgnore">
+        <div class="row"><button class="btn pri" id="saveSet2">💾 Kaydi</button></div>
+      </div>
+      <div class="card">
+        <h3>🧪 Tijaabi AI-ga</h3>
+        <div style="font-size:13px;color:var(--m)">Qor fariin sidii macmiil oo kale — WhatsApp looma dirayo.</div>
+        <div id="testLog" style="display:flex;flex-direction:column;gap:6px;margin:12px 0;max-height:300px;overflow:auto"></div>
+        <div class="row" style="margin-top:0"><input id="testIn" placeholder="Tusaale: Salaan, qiimuhu waa imisa?" style="flex:1"><button class="btn pri" id="testBtn">Dir</button><button class="btn" id="testClr">Tirtir</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async (url, opt = {}) => {
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opt,
+    body: opt.body ? JSON.stringify(opt.body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+};
+const toast = t => { const e = $('#toast'); e.textContent = t; e.classList.add('on'); setTimeout(() => e.classList.remove('on'), 2200); };
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmt = ts => { const d = new Date(ts), n = new Date();
+  return d.toDateString() === n.toDateString() ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString(); };
+const WHO = { user: 'MACMIIL', assistant: '🤖 BOT', owner: '👤 ADIGA' };
+
+let sel = null, chats = [], lastSig = '';
+
+// ---- navigation
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + b.dataset.v));
+  if (b.dataset.v === 'settings') loadSettings();
+  if (b.dataset.v === 'connect') loadKb();
+});
+
+// ---- status
+async function loadStatus() {
+  try {
+    const s = await api('/api/status');
+    const p = $('#waPill');
+    p.className = 'pill ' + (s.connected ? 'ok' : 'bad');
+    p.textContent = s.connected ? '● Ku xiran' + (s.me?.name ? ' — ' + s.me.name : '') : '● Ma xirna';
+    $('#botToggle').checked = s.botEnabled;
+    const h = $('#humanPill');
+    h.style.display = s.stats.needsHuman ? '' : 'none';
+    h.textContent = `🙋 ${s.stats.needsHuman} ayaa ku sugaya`;
+    $('#qrBox').innerHTML = s.connected
+      ? `<h3>✅ WhatsApp waa ku xiran yahay</h3><p style="color:var(--m);font-size:14px;margin:10px 0">${esc(s.me?.id || '')}</p><button class="btn red" onclick="logout()">Ka bax (Logout)</button>`
+      : s.qr
+        ? `<h3>📱 Scan garee QR-kan</h3><p style="color:var(--m);font-size:13px;margin:8px 0 14px">WhatsApp → ⋮ / Settings → <b>Linked devices</b> → <b>Link a device</b></p><img src="${s.qr}">`
+        : `<h3>⏳ Xiriirka ayaa la sameynayaa…</h3><p style="color:var(--m);font-size:13px">${esc(s.lastError || '')}</p>`;
+    $('#stats').innerHTML = `
+      <div class="stat">Sheekooyinka guud <b>${s.stats.chats}</b></div>
+      <div class="stat">Fariimaha macaamiisha maanta <b>${s.stats.today}</b></div>
+      <div class="stat">Kuwa adiga ku sugaya <b>${s.stats.needsHuman}</b></div>
+      <div class="stat">AI model <b>${esc(s.model)}</b></div>`;
+    $('#sheetInfo').innerHTML = !s.sheet.configured ? '⚠️ SHEET_WEBAPP_URL lama gelin (.env)'
+      : s.sheet.error ? '❌ Khalad: ' + esc(s.sheet.error)
+      : `✅ ${s.sheet.rows ?? 0} saf · ${s.sheet.chars} xaraf · la cusbooneysiiyay ${s.sheet.updated ? new Date(s.sheet.updated).toLocaleTimeString() : '—'}`;
+  } catch (e) { $('#waPill').textContent = 'Server-ka lama gaari karo'; }
+}
+$('#botToggle').onchange = async e => {
+  await api('/api/settings', { method: 'POST', body: { botEnabled: e.target.checked } });
+  toast(e.target.checked ? 'Bot-ka waa la shiday ✅' : 'Bot-ka waa la damiyay ⏸');
+};
+async function logout() { if (confirm('Ma hubtaa inaad WhatsApp ka baxdo?')) { await api('/api/logout', { method: 'POST' }); toast('Waa laga baxay'); } }
+
+// ---- chat list
+async function loadChats() {
+  chats = await api('/api/chats');
+  const q = $('#search').value.toLowerCase();
+  const list = chats.filter(c => !q || (c.name + ' ' + c.phone).toLowerCase().includes(q));
+  $('#items').innerHTML = list.length ? list.map(c => `
+    <div class="ci ${c.jid === sel ? 'sel' : ''}" data-j="${esc(c.jid)}">
+      <div class="av">${esc((c.name || c.phone || '?')[0].toUpperCase())}</div>
+      <div class="b">
+        <div class="r1"><span class="nm">${esc(c.name || c.phone || c.jid)}</span><span class="tm">${c.lastTs ? fmt(c.lastTs) : ''}</span></div>
+        <div class="lm">${c.last ? (c.last.role !== 'user' ? (c.last.role === 'owner' ? '👤 ' : '🤖 ') : '') + esc(c.last.text) : ''}</div>
+        <div class="tags">${c.unread && c.jid !== sel ? `<span class="tag u">${c.unread}</span>` : ''}${c.needsHuman ? '<span class="tag h">🙋 Adiga ku sugaya</span>' : ''}${c.paused ? '<span class="tag p">⏸ Bot-ku wuu hakan</span>' : ''}</div>
+      </div>
+    </div>`).join('') : '<div class="empty">Weli sheeko ma jirto.<br>Marka macmiil fariin soo diro halkan ayay ka muuqan.</div>';
+  document.querySelectorAll('.ci').forEach(el => el.onclick = () => openChat(el.dataset.j));
+  if (sel) refreshConv();
+}
+$('#search').oninput = loadChats;
+
+async function openChat(jid) {
+  sel = jid; lastSig = '';
+  document.body.classList.add('mob-conv');
+  $('#conv').innerHTML = `
+    <div id="convHead">
+      <button class="btn back" onclick="document.body.classList.remove('mob-conv')">←</button>
+      <div class="av" id="cAv"></div>
+      <div style="flex:1;min-width:0"><div class="nm" id="cName"></div><div class="ph" id="cPhone"></div></div>
+      <label class="switch" title="Bot-ka sheekadan"><input type="checkbox" id="chatBot"><span></span>Bot</label>
+      <button class="btn red" id="delChat" title="Tirtir taariikhda">🗑</button>
+    </div>
+    <div id="msgs"></div>
+    <div id="compose"><textarea id="reply" placeholder="Adiga ku jawaab… (bot-ku wuu aamusayaa muddo)"></textarea><button class="btn pri" id="sendBtn">Dir ➤</button></div>`;
+  $('#chatBot').onchange = async e => { await api(`/api/chats/${encodeURIComponent(sel)}/pause`, { method: 'POST', body: { paused: !e.target.checked } }); lastSig=''; loadChats(); };
+  $('#delChat').onclick = async () => { if (!confirm('Taariikhda sheekadan ma tirtirtaa?')) return; await api(`/api/chats/${encodeURIComponent(sel)}`, { method: 'DELETE' }); sel = null; $('#conv').innerHTML = '<div class="empty">La tirtiray</div>'; loadChats(); };
+  $('#sendBtn').onclick = send;
+  $('#reply').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+  await refreshConv(); loadChats();
+}
+async function refreshConv() {
+  if (!sel || !$('#msgs')) return;
+  const c = await api('/api/chats/' + encodeURIComponent(sel));
+  $('#cAv').textContent = (c.name || c.phone || '?')[0].toUpperCase();
+  $('#cName').textContent = c.name || c.phone || c.jid;
+  $('#cPhone').textContent = (c.phone ? '+' + c.phone : '') + (c.paused ? (c.manualPause ? ' · ⏸ bot-ku wuu hakan' : ' · ⏸ hakad ilaa ' + fmt(c.pausedUntil)) : ' · 🤖 bot-ku wuu jawaabayaa');
+  $('#chatBot').checked = !c.paused;
+  const sig = c.messages.length + ':' + c.paused;
+  if (sig === lastSig) return; lastSig = sig;
+  const box = $('#msgs');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  box.innerHTML = c.messages.map(m => `<div class="m ${m.role}">${m.role !== 'user' ? `<div class="who">${WHO[m.role]}</div>` : ''}${esc(m.text)}<span class="t">${fmt(m.ts)}</span></div>`).join('');
+  if (atBottom || box.dataset.first !== sel) { box.scrollTop = box.scrollHeight; box.dataset.first = sel; }
+}
+async function send() {
+  const t = $('#reply').value.trim(); if (!t) return;
+  $('#sendBtn').disabled = true;
+  try { await api(`/api/chats/${encodeURIComponent(sel)}/send`, { method: 'POST', body: { text: t } }); $('#reply').value = ''; lastSig=''; await refreshConv(); loadChats(); }
+  catch (e) { toast('❌ ' + e.message); }
+  $('#sendBtn').disabled = false;
+}
+
+// ---- settings
+async function loadSettings() {
+  const s = await api('/api/settings');
+  $('#sPrompt').value = s.systemPrompt; $('#sPause').value = s.pauseMinutes;
+  $('#sBatch').value = s.batchSeconds; $('#sAge').value = s.maxAgeMinutes; $('#sIgnore').value = s.ignoreNumbers;
+}
+const saveSettings = async () => {
+  await api('/api/settings', { method: 'POST', body: { systemPrompt: $('#sPrompt').value, pauseMinutes: $('#sPause').value,
+    batchSeconds: $('#sBatch').value, maxAgeMinutes: $('#sAge').value, ignoreNumbers: $('#sIgnore').value } });
+  toast('✅ Waa la kaydiyay');
+};
+$('#saveSet').onclick = saveSettings; $('#saveSet2').onclick = saveSettings;
+$('#resetPrompt').onclick = async () => { await api('/api/settings/reset-prompt', { method: 'POST' }); loadSettings(); toast('Kii asalka ayaa lagu celiyay'); };
+
+// ---- knowledge
+async function loadKb() { const k = await api('/api/knowledge'); $('#kbPreview').textContent = k.preview || '— (wax lama helin)'; }
+$('#refreshKb').onclick = async () => { const k = await api('/api/knowledge/refresh', { method: 'POST' }); $('#kbPreview').textContent = k.preview || '—'; toast(k.error ? '❌ ' + k.error : '✅ Sheet-ka waa la soo raray'); loadStatus(); };
+
+// ---- test
+let testMsgs = [];
+const renderTest = () => $('#testLog').innerHTML = testMsgs.map(m => `<div class="m ${m.role}" style="max-width:90%">${esc(m.text)}</div>`).join('');
+$('#testBtn').onclick = async () => {
+  const t = $('#testIn').value.trim(); if (!t) return;
+  testMsgs.push({ role: 'user', text: t }); $('#testIn').value = ''; renderTest();
+  $('#testBtn').disabled = true;
+  try { const r = await api('/api/test', { method: 'POST', body: { messages: testMsgs } }); testMsgs.push({ role: 'assistant', text: r.answer || '(jawaab la\'aan)' }); }
+  catch (e) { testMsgs.push({ role: 'assistant', text: '❌ ' + e.message }); }
+  renderTest(); $('#testBtn').disabled = false;
+};
+$('#testIn').onkeydown = e => { if (e.key === 'Enter') $('#testBtn').click(); };
+$('#testClr').onclick = () => { testMsgs = []; renderTest(); };
+
+// ---- loop
+loadStatus(); loadChats();
+setInterval(loadStatus, 4000);
+setInterval(loadChats, 3000);
+</script>
+</body>
+</html>
