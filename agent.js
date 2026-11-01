@@ -1,0 +1,116 @@
+// =============================================================
+//  MECO AI Agent — admin-ku WhatsApp ayuu su'aal ku weydiiyaa, AI-gu xogta MECO
+//  (Google Apps Script) ayuu ka soo qaataa (function calling) kadibna si sax ah ayuu u jawaabaa.
+// =============================================================
+
+export const MECO_TOOLS = [
+  { name: 'search_customers', description: 'Raadi macaamiisha MECO (magac, lambar telefoon, ID ama mitir). Wuxuu soo celiyaa deynta, bixintii u dambeysay, iyo PaidThisCycle (true = caawa/wareeggan waa laga qaaday).',
+    parameters: { type: 'object', properties: { query: { type: 'string', description: 'Magaca (qayb ka mid ah), telefoonka, ID ama mitirka' } }, required: ['query'] } },
+  { name: 'customer_detail', description: 'Faahfaahinta hal macmiil: xaaladda, 10-kii bixin ee u dambeeyay, biilasha aan la bixin. Isticmaal id haddii la hayo.',
+    parameters: { type: 'object', properties: { query: { type: 'string' }, id: { type: 'string', description: 'ID-ga macmiilka (haddii la yaqaan)' } } } },
+  { name: 'tonight_status', description: 'Caawa (wareegga hadda socda): macaamiisha laga qaaday iyo kuwa aan weli laga qaadin, wadarta.',
+    parameters: { type: 'object', properties: { type: { type: 'string', enum: ['daily', 'monthly'], description: 'daily = habeenle (default), monthly = bile' } } } },
+  { name: 'day_report', description: 'Warbixinta maalin (ururinta staff, shidaal, mushahar, kayd, xisaab-xir). Date la\'aan = xalay.',
+    parameters: { type: 'object', properties: { date: { type: 'string', description: 'YYYY-MM-DD' } } } },
+  { name: 'payments', description: 'Liiska lacag-bixinta muddo (rasiid, macmiil, lacag, hab, shaqaale). Default = maanta.',
+    parameters: { type: 'object', properties: { from: { type: 'string', description: 'YYYY-MM-DD' }, to: { type: 'string', description: 'YYYY-MM-DD' }, staff: { type: 'string' }, method: { type: 'string', description: 'Cash, Telebirr, Ebirr, CBE' } } } },
+  { name: 'debts', description: 'Macaamiisha deynta lagu leeyahay (ugu badan marka hore) iyo wadarta deynta.',
+    parameters: { type: 'object', properties: { type: { type: 'string', enum: ['daily', 'monthly'] } } } },
+  { name: 'treasury', description: 'Qasnadda muddo: dakhliga staff, shidaal, mushahar, kayd. Default = bishan.',
+    parameters: { type: 'object', properties: { from: { type: 'string' }, to: { type: 'string' } } } },
+  { name: 'open_tickets', description: 'Ciladaha (tickets) macaamiisha ee furan.', parameters: { type: 'object', properties: {} } },
+  { name: 'send_receipt', description: 'U DIR macmiilka rasiidkiisa WhatsApp ahaan (bixintii u dambeysay ama rasiid lambar gaar ah). Kaliya marka admin-ku si cad u codsado.',
+    parameters: { type: 'object', properties: { query: { type: 'string', description: 'Magaca/telefoonka macmiilka' }, id: { type: 'string' }, receipt: { type: 'string', description: 'RC-xxxxx (ikhtiyaari)' } } } },
+];
+
+export const ADMIN_PROMPT = `Waxaad tahay "MECO AI" — kaaliyaha maamulaha MECO POWER SUPPLY (shirkad koronto ka iibisa macaamiisha degmada Mustaxiil).
+Maamulaha ayaa kula hadlaya WhatsApp. Ku jawaab Soomaali, si kooban oo cad (WhatsApp format: *bold*, liisas gaagaaban).
+XEERAR:
+- Su'aal kasta oo xog MECO ah (macaamiil, lacag, deyn, caawa, rasiid, qasnad, cilado) — MARKASTA isticmaal tools-ka. Weligaa ha male-awaalin tiro ama magac.
+- "Caawa ma laga qaaday?" → PaidThisCycle (true = haa, wareeggan waa laga qaaday; muuji goorta, lacagta iyo cidda qaaday).
+- Haddii magacu macaamiil badan la mid yahay, liiska u soo bandhig oo weydii kee.
+- send_receipt kaliya marka maamuluhu si cad u yiraahdo "u dir rasiidka".
+- Lacagta ku qor lambar + lacagta (tusaale 1,500 Br). Taariikhda: DD/MM/YYYY.
+- Haddii tool-ku khalad soo celiyo, u sheeg maamulaha sababta.`;
+
+// ---------- Schema helpers ----------
+const toGeminiSchema = (s) => {
+  if (!s || typeof s !== 'object') return s;
+  const o = { ...s };
+  if (o.type) o.type = String(o.type).toUpperCase();
+  if (o.properties) o.properties = Object.fromEntries(Object.entries(o.properties).map(([k, v]) => [k, toGeminiSchema(v)]));
+  if (o.items) o.items = toGeminiSchema(o.items);
+  if (o.properties && !Object.keys(o.properties).length) delete o.properties;
+  return o;
+};
+
+async function postJSON(url, headers, body, label) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`${label} ${r.status}: ${j.error?.message || JSON.stringify(j).slice(0, 200)}`);
+  return j;
+}
+
+/**
+ * Agent loop (function calling) — gemini | groq/openrouter/openai | claude
+ * history: [{role:'user'|'assistant', content}]
+ */
+export async function runAgent({ provider, model, key, base, system, history, tools, exec, maxSteps = 6 }) {
+  if (provider === 'gemini') {
+    const contents = history.map((m) => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.content }] }));
+    const decl = [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: toGeminiSchema(t.parameters) })) }];
+    for (let step = 0; step < maxSteps; step++) {
+      const j = await postJSON(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        { 'x-goog-api-key': key },
+        { systemInstruction: { parts: [{ text: system }] }, contents, tools: decl, generationConfig: { maxOutputTokens: 1500, temperature: 0.2 } }, 'gemini');
+      const cand = j.candidates?.[0]?.content;
+      const parts = cand?.parts || [];
+      const calls = parts.filter((p) => p.functionCall);
+      if (!calls.length) {
+        const text = parts.map((p) => p.text || '').join('').trim();
+        if (!text) throw new Error('Gemini jawaab ma soo celin (' + (j.candidates?.[0]?.finishReason || '?') + ')');
+        return text;
+      }
+      contents.push({ role: 'model', parts });
+      const responses = [];
+      for (const p of calls) {
+        const result = await exec(p.functionCall.name, p.functionCall.args || {});
+        responses.push({ functionResponse: { name: p.functionCall.name, response: { result } } });
+      }
+      contents.push({ role: 'user', parts: responses });
+    }
+    return 'Waan ka xumahay, su\'aashan aad bay u adag tahay — fadlan si kale u weydii.';
+  }
+
+  if (provider === 'claude') {
+    const messages = history.map((m) => ({ role: m.role, content: m.content }));
+    const ctools = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+    for (let step = 0; step < maxSteps; step++) {
+      const j = await postJSON('https://api.anthropic.com/v1/messages', { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+        { model, max_tokens: 1500, system, messages, tools: ctools }, 'claude');
+      const uses = (j.content || []).filter((b) => b.type === 'tool_use');
+      if (!uses.length) return (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+      messages.push({ role: 'assistant', content: j.content });
+      const results = [];
+      for (const u of uses) results.push({ type: 'tool_result', tool_use_id: u.id, content: JSON.stringify(await exec(u.name, u.input || {})) });
+      messages.push({ role: 'user', content: results });
+    }
+    return 'Waan ka xumahay, fadlan su\'aasha si kale u weydii.';
+  }
+
+  // OpenAI-compatible (groq, openrouter, openai)
+  const messages = [{ role: 'system', content: system }, ...history.map((m) => ({ role: m.role, content: m.content }))];
+  const otools = tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  for (let step = 0; step < maxSteps; step++) {
+    const j = await postJSON(`${base}/chat/completions`, { Authorization: `Bearer ${key}` },
+      { model, max_tokens: 1500, temperature: 0.2, messages, tools: otools, tool_choice: 'auto' }, provider);
+    const msg = j.choices?.[0]?.message || {};
+    if (!msg.tool_calls?.length) return (msg.content || '').trim();
+    messages.push(msg);
+    for (const tc of msg.tool_calls) {
+      let args = {}; try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* ignore */ }
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: JSON.stringify(await exec(tc.function.name, args)) });
+    }
+  }
+  return 'Waan ka xumahay, fadlan su\'aasha si kale u weydii.';
+}

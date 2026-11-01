@@ -16,6 +16,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
 } from '@whiskeysockets/baileys';
 import * as store from './store.js';
+import { MECO_TOOLS, ADMIN_PROMPT, runAgent } from './agent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -67,6 +68,7 @@ let db = {
     notifyNumbers: '',     // MECO: lambarada lacag-bixinta loogu sheegayo (comma)
     notifySecret: '',      // MECO: sirta /api/notify (si toos ah ayaa loo sameeyaa)
     customerReceipts: false, // MECO: rasiid WhatsApp ah u dir macmiilka
+    mecoUrl: 'https://script.google.com/macros/s/AKfycbzOAYE9TIE8-xCGYLQEkiJljVAz-pHl5rIaNaB66fEO_lobtmf9R5N-5Ju7axc0H9A_/exec',
   },
   chats: {},
 };
@@ -304,6 +306,12 @@ async function handleMessage(m, type) {
   const text = extractText(m);
   if (!text) return;
   const phone = phoneOf(m.key);
+
+  // MECO AI agent: "Message yourself" chat-ka ama lambarada maamulaha
+  if (isAdminMsg(m, phone)) {
+    if (ourIds.has(m.key.id) || type !== 'notify') return;
+    return handleAdmin(jid, text);
+  }
   const tsMs = Number(m.messageTimestamp || 0) * 1000 || Date.now();
 
   if (m.key.fromMe) {
@@ -376,6 +384,84 @@ async function startWhatsApp() {
       try { await handleMessage(m, type); } catch (e) { console.error('Message error:', e.message); }
     }
   });
+}
+
+// -------------------------------------------------------------
+//  MECO AI agent (maamulaha)
+// -------------------------------------------------------------
+const userPart = (j) => String(j || '').split('@')[0].split(':')[0];
+function isAdminMsg(m, phone) {
+  const me = [sock?.user?.id, sock?.user?.lid].filter(Boolean).map(userPart);
+  if (m.key.fromMe) return me.includes(userPart(m.key.remoteJid)) || (m.key.remoteJidAlt && me.includes(userPart(m.key.remoteJidAlt)));
+  const admins = String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean).map(userPart);
+  return !!phone && admins.includes(phone);
+}
+
+async function mecoCall(tool, args) {
+  if (!db.settings.mecoUrl) return { error: 'MECO URL lama gelin (Habaynta → MECO)' };
+  try {
+    const r = await fetch(db.settings.mecoUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ wa: db.settings.notifySecret, tool, args }) });
+    const txt = await r.text();
+    let j; try { j = JSON.parse(txt); } catch { return { error: 'MECO jawaab khaldan — Code.gs cusub ma la deploy gareeyay? (' + txt.slice(0, 80) + ')' }; }
+    return j.ok ? { now: j.now, ...j.data } : { error: j.error };
+  } catch (e) { return { error: 'MECO lama gaari karo: ' + e.message }; }
+}
+
+function receiptText(d) {
+  const p = d.payment, c = d.customer;
+  return [
+    '⚡ *MECO POWER SUPPLY*',
+    '🧾 *RASIID LACAG-BIXIN*',
+    '',
+    `Rasiid: *${p.Receipt}*`,
+    `Macmiil: ${c.Name}`,
+    `Lacag: *${money(p.Amount)}*`,
+    `Hab: ${p.Method}`,
+    `Taariikh: ${p.Date} ${p.Time || ''}`,
+    p.Staff ? `Qaaday: ${p.Staff}` : '',
+    `Deynta haray: ${money(c.Due)}`,
+    '',
+    'Mahadsanid! ✅',
+    '_Powering Mustaxiil._',
+  ].filter((x) => x !== '').join('\n');
+}
+
+async function execTool(name, args) {
+  if (name === 'send_receipt') {
+    const d = await mecoCall('receipt', args);
+    if (d.error || d.ambiguous) return d;
+    const jid = toJid(d.customer.Phone);
+    if (!jid) return { error: `${d.customer.Name} lambar telefoon kuma diiwaangashana MECO` };
+    if (!wa.connected) return { error: 'WhatsApp ma xirna' };
+    await sendText(jid, receiptText(d));
+    return { sent: true, to: d.customer.Phone, customer: d.customer.Name, receipt: d.payment.Receipt, amount: d.payment.Amount };
+  }
+  if (!MECO_TOOLS.some((t) => t.name === name)) return { error: 'Tool lama yaqaan: ' + name };
+  return mecoCall(name, args);
+}
+
+const adminHistory = new Map();
+async function handleAdmin(jid, text) {
+  const h = adminHistory.get(jid) || [];
+  if (/^\/?(reset|cusub|clear)$/i.test(text.trim())) { adminHistory.delete(jid); return sendText(jid, '🔄 Sheekada waa la tirtiray.'); }
+  h.push({ role: 'user', content: text });
+  while (h.length > 16) h.shift();
+  while (h.length && h[0].role !== 'user') h.shift();
+  adminHistory.set(jid, h);
+  await sock.sendPresenceUpdate('composing', jid).catch(() => {});
+  try {
+    const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
+    const answer = await runAgent({ provider: AI_PROVIDER, model: AI_MODEL, key: AI_KEY, base: PROVIDERS[AI_PROVIDER].base,
+      system: ADMIN_PROMPT + `\nWaqtiga hadda: ${now} (Africa/Addis_Ababa).`, history: h, tools: MECO_TOOLS, exec: execTool });
+    const reply = answer || '…';
+    h.push({ role: 'assistant', content: reply });
+    await sendText(jid, '🤖 ' + reply);
+  } catch (e) {
+    console.error('Admin agent error:', e.message);
+    h.pop();
+    await sendText(jid, '⚠️ AI-ga khalad: ' + e.message).catch(() => {});
+  } finally { sock?.sendPresenceUpdate('paused', jid).catch(() => {}); }
 }
 
 // -------------------------------------------------------------
@@ -552,6 +638,7 @@ app.post('/api/settings', (req, res) => {
     ...(s.ignoreNumbers !== undefined && { ignoreNumbers: String(s.ignoreNumbers) }),
     ...(s.notifyNumbers !== undefined && { notifyNumbers: String(s.notifyNumbers) }),
     ...(s.customerReceipts !== undefined && { customerReceipts: !!s.customerReceipts }),
+    ...(s.mecoUrl !== undefined && { mecoUrl: String(s.mecoUrl).trim() }),
   };
   saveDb();
   res.json(db.settings);
@@ -571,6 +658,15 @@ app.post('/api/test', async (req, res) => {
   try {
     const fake = { name: 'Tijaabo', messages: (req.body.messages || []).map((m) => ({ role: m.role, text: m.text })) };
     res.json({ answer: await askAI(fake) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/agent/test', async (req, res) => {
+  try {
+    const h = (req.body.messages || []).map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+    const answer = await runAgent({ provider: AI_PROVIDER, model: AI_MODEL, key: AI_KEY, base: PROVIDERS[AI_PROVIDER].base,
+      system: ADMIN_PROMPT, history: h, tools: MECO_TOOLS.filter((t) => t.name !== 'send_receipt'), exec: execTool });
+    res.json({ answer });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
