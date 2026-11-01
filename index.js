@@ -129,6 +129,8 @@ if (!db.settings.notifySecret) {
   await store.saveSettings(db.settings);
 }
 console.log(`🗄️  Supabase: ${Object.keys(db.chats).length} sheeko ayaa la soo raray`);
+db.settings.running = { commit: (process.env.RENDER_GIT_COMMIT || 'local').slice(0, 7), startedAt: new Date().toISOString() };
+saveDb();
 
 const dirtyChats = new Set();
 let settingsDirty = false;
