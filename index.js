@@ -54,7 +54,37 @@ function geminiKey() {
   if (k) return k;
   return /^AIza/.test(process.env.AI_API_KEY || '') ? process.env.AI_API_KEY : '';
 }
+// 🔬 Tijaabada AI-yada bilaashka ah: bot-ku wuu tijaabiyaa (boot + 3 saac kasta), kuwa shaqeeya ayaa la hormariyaa
+const DIAG_CANDIDATES = [
+  ...['openai', 'openai-fast', 'openai-large', 'gemini', 'mistral', 'deepseek', 'llama', 'qwen-coder'].map((m) => ({ provider: 'pollinations', key: 'free', base: 'https://text.pollinations.ai/openai', model: m })),
+  ...['openai', 'gemini', 'mistral'].map((m) => ({ provider: 'pollget', key: 'free', model: m })),
+  ...['meta-llama/llama-3.3-70b-instruct:free', 'nousresearch/hermes-3-llama-3.1-405b:free', 'google/gemma-3-27b-it:free', 'deepseek/deepseek-chat-v3-0324:free', 'qwen/qwen3-235b-a22b:free', 'mistralai/mistral-small-3.2-24b-instruct:free', 'z-ai/glm-4.5-air:free', 'moonshotai/kimi-k2:free', 'openrouter/free'].map((m) => ({ provider: 'openrouter', base: 'https://openrouter.ai/api/v1', model: m })),
+];
+async function runAiDiag() {
+  const out = [], orKey = db.settings.aiProvider === 'openrouter' ? db.settings.aiKey : '';
+  for (const c0 of DIAG_CANDIDATES) {
+    const c = { ...c0, key: c0.provider === 'openrouter' ? orKey : c0.key };
+    if (!c.key) continue;
+    const t0 = Date.now();
+    try {
+      const a = await callAI(c, 'Ku jawaab af-Soomaali sax ah, hal jumlo oo kooban.', [{ role: 'user', content: 'Goorma ayuu dhashay Nabi Maxamed (scw), xaggeese?' }]);
+      out.push({ p: c.provider, m: c.model, ok: true, ms: Date.now() - t0, a: stripThink(a).slice(0, 160) });
+    } catch (e) { out.push({ p: c.provider, m: c.model, ok: false, ms: Date.now() - t0, e: String(e.message).slice(0, 120) }); }
+    await new Promise((r) => setTimeout(r, c.provider.startsWith('poll') ? 4000 : 1500));
+  }
+  db.settings.aiDiag = { at: new Date().toISOString(), results: out }; saveDb();
+  console.log('🔬 AI diag:', out.filter((x) => x.ok).map((x) => x.p + '/' + x.m).join(', ') || 'midna ma shaqeyn');
+}
+setTimeout(() => runAiDiag().catch(() => {}), 25000);
+setInterval(() => runAiDiag().catch(() => {}), 3 * 3600 * 1000);
 function aiChain(forCustomer) {
+  // Haddii maamuluhu doortay (aiPrefer: "provider/model,…") ama tijaabadu jirto → kuwa shaqeeyay oo kaliya, kan ugu dhakhsaha badan marka hore
+  const pref = String(db.settings.aiPrefer || '').split(',').map((x) => x.trim()).filter(Boolean);
+  const diag = (db.settings.aiDiag?.results || []).filter((x) => x.ok);
+  const orKey = db.settings.aiProvider === 'openrouter' ? db.settings.aiKey : '';
+  const mk = (p, m) => { const c = DIAG_CANDIDATES.find((x) => x.provider === p && x.model === m); return c ? { ...c, key: p === 'openrouter' ? orKey : c.key } : null; };
+  if (pref.length) { const l = pref.map((x) => { const i = x.indexOf('/'); return mk(x.slice(0, i), x.slice(i + 1)); }).filter((c) => c && c.key); if (l.length) return l; }
+  if (diag.length) { const l = diag.sort((a, b) => a.ms - b.ms).map((x) => mk(x.p, x.m)).filter((c) => c && c.key); if (l.length) return l; }
   const chain = [];
   // 1) Pollinations — bilaash, key la'aan (GPT family, af-Soomaali wanaagsan)
   if (db.settings.pollinations !== false) chain.push(...PROVIDERS.pollinations.model.split(',').map((model) => ({ provider: 'pollinations', key: 'free', base: PROVIDERS.pollinations.base, model })));
@@ -77,6 +107,7 @@ async function tryModels(fn, forCustomer) {
     try { return stripThink(await fn(c)); }
     catch (e) {
       last = e; console.error(`AI ${c.provider}/${c.model}:`, e.message);
+      db.settings.aiErrors = [{ t: new Date().toISOString(), m: c.provider + '/' + c.model, e: String(e.message).slice(0, 140) }, ...(db.settings.aiErrors || [])].slice(0, 15); saveDb();
       if (/429|quota|rate|exhaust|queue/i.test(e.message)) cooldown.set(c.provider + c.model, Date.now() + (c.provider === 'pollinations' ? 20 * 1000 : 10 * 60 * 1000));
     }
   }
@@ -115,6 +146,7 @@ let db = {
     notifySecret: '',      // MECO: sirta /api/notify (si toos ah ayaa loo sameeyaa)
     customerReceipts: false, // MECO: rasiid WhatsApp ah u dir macmiilka
     appAutoReply: true,    // MECO: AI-gu ha ka jawaabo fariimaha app-ka
+    secretaryFor: 'Duale', secretaryFor2: 'Abdinur',
     useAI: false,          // false = maskaxda af-Soomaaliga ee MECO (key la'aan); true = AI dibadeed (Gemini/OpenRouter)
     mecoUrl: 'https://script.google.com/macros/s/AKfycbzOAYE9TIE8-xCGYLQEkiJljVAz-pHl5rIaNaB66fEO_lobtmf9R5N-5Ju7axc0H9A_/exec',
   },
@@ -252,13 +284,26 @@ async function askAI(chat) {
 }
 
 async function postJSON(url, headers, body) {
-  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const ctl = new AbortController(); setTimeout(() => ctl.abort(), 45000);
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: ctl.signal });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`${r.status}: ${j.error?.message || JSON.stringify(j).slice(0, 200)}`);
   return j;
 }
 
 async function callAI({ provider, model: AI_MODEL, key: AI_KEY, base }, system, messages) {
+  if (provider === 'pollget') {   // Pollinations qaabka GET (key la'aan)
+    const convo = messages.slice(-8).map((m) => (m.role === 'user' ? 'Qofka: ' : 'Adiga: ') + m.content).join('\n');
+    const url = `https://text.pollinations.ai/${encodeURIComponent(convo + '\nAdiga:')}?model=${encodeURIComponent(AI_MODEL)}&system=${encodeURIComponent(system.slice(0, 3500))}&private=true`;
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 45000);
+    try {
+      const r = await fetch(url, { signal: ctl.signal });
+      const t = (await r.text()).trim();
+      if (!r.ok) throw new Error(`${r.status}: ${t.slice(0, 160)}`);
+      if (!t || /^\s*[{<]/.test(t)) throw new Error('jawaab khaldan: ' + t.slice(0, 120));
+      return t;
+    } finally { clearTimeout(tm); }
+  }
   if (provider === 'gemini') {
     const j = await postJSON(
       `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`,
@@ -419,8 +464,14 @@ async function handleMessage(m, type, sid = 'main') {
   if (m.key.fromMe) {
     if (ourIds.has(m.key.id)) return;           // bot-ka ama dashboard-ka ayaa diray
     if (type !== 'notify') return;
-    // Adiga ayaa telefoonka ka jawaabay → bot-ku ha iska aamuso muddo
     const chat = getChat(jid, '', phone, sid);
+    // Amar: "AI u jawaab" / "bot u jawaab" → bot-ku ha sii wado sheekada (aamus la'aan)
+    if (/\b(ai|bot|botka|bot-ka)\b/i.test(text) && /jawaab|qabo|caawi|la hadal|la sheekee|sii wad/i.test(text)) {
+      chat.pausedUntil = 0; chat.manualPause = false; chat.needsHuman = false; chat.aiChat = true; chat.secGreetAt = chat.secGreetAt || Date.now(); saveDb(chat.key);
+      if (chat.messages.length && chat.messages[chat.messages.length - 1].role === 'user') scheduleReply(chat.key);
+      return;
+    }
+    // Adiga ayaa telefoonka ka jawaabay → bot-ku ha iska aamuso muddo
     addMessage(chat, 'owner', text);
     chat.pausedUntil = Date.now() + db.settings.pauseMinutes * 60 * 1000;
     chat.needsHuman = false;
@@ -687,7 +738,7 @@ async function customerEngine(chat, key) {
 // Qofku ma rabaa milkiilaha? (gudbi, isaga, "waxaan u baahnaa Duale", "xog ka rabay", haa/ok…)
 function wantsOwner(text, owner, sid) {
   const t = ' ' + String(text).toLowerCase() + ' ';
-  if (/ila sheekee|ila sheekayso|ila hadal|adiga ila|adigu ii|su'aal ayaan ku/i.test(t)) return false;
+  if (/ila sheekee|ila sheekayso|ila hadal|adiga ila|adigu ii|su'aal|weydii|waydii|\?|\bgoorm|\bmaxa[ay]\b|waa maxay|\bsidee\b|\bxagee\b|\bhalkee\b|\bimisa\b|\byaa\b|\bmaxaa\b|\bmiyaa?\b/i.test(t)) return false;
   const names = [owner, cleanName(ses(sid).sock?.user?.name), 'ducaale', 'duale', 'dualle', 'maamulaha', 'milkiilaha'].filter(Boolean).map((n) => n.toLowerCase());
   if (names.some((n) => t.includes(n))) return true;
   return /gudbi|isaga|asaga|u sheeg|ii sheeg|waan sugayaa|u baahn|ubaahn|rabaa|rabay|la hadlo|la hadli|wac|wici|^\s*(haa|haye|ok|okey|okay|hagaag|waa yahay|waayahay)\s*[.!]*\s*$/i.test(t);
