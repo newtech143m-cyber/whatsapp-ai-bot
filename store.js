@@ -120,3 +120,13 @@ export async function deleteChat(jid) {
   const { error } = await supabase.from('wa_chats').delete().eq('jid', jid);
   if (error) console.error('deleteChat:', error.message);
 }
+
+// ---------------- Outbox (fariimo laga diro Supabase) ----------------
+export async function outboxPending() {
+  const { data, error } = await supabase.from('wa_outbox').select('*').eq('status', 'pending').order('id').limit(20);
+  if (error) throw new Error('wa_outbox: ' + error.message);
+  return data || [];
+}
+export async function outboxMark(id, status, err) {
+  await supabase.from('wa_outbox').update({ status, error: err || null, sent_at: status === 'sent' ? new Date().toISOString() : null }).eq('id', id);
+}

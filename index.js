@@ -790,6 +790,21 @@ async function flushNotifyQueue() {
 }
 setInterval(flushNotifyQueue, 30 * 1000);
 
+// Outbox: fariimaha lagu qoro Supabase (wa_outbox) → WhatsApp (10 ilbiriqsi kasta)
+let outboxBusy = false;
+setInterval(async () => {
+  if (outboxBusy) return; outboxBusy = true;
+  try {
+    for (const o of await store.outboxPending()) {
+      const sid = o.sid === 'out' ? outSid() : (SES[o.sid] ? o.sid : 'main');
+      if (!ses(sid).wa.connected) continue;
+      try { await sendText(toJid(o.to_phone), o.text, sid); await store.outboxMark(o.id, 'sent'); }
+      catch (e) { await store.outboxMark(o.id, 'error', e.message); }
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+  } catch (e) { /* table ma jiro ama khalad */ } finally { outboxBusy = false; }
+}, 10 * 1000);
+
 // -------------------------------------------------------------
 //  Admin Dashboard (Express)
 // -------------------------------------------------------------
