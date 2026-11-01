@@ -655,6 +655,13 @@ async function customerEngine(chat, key) {
     if (d.length >= 9) { const r2 = await mecoCall('ask', { role: 'customer', phone: d, text: 'deyntayda' }); if (!r2.notCustomer && !r2.error) { chat.mecoPhone = d; saveDb(key); r = r2; } }
   }
   if (r.error) throw new Error('MECO: ' + r.error);
+  const fromMeco = /\bmeco\b|app-?ka|\bapp\b|appka|korontada mustaxiil/i.test(text);
+  // 0) "Waxaan ka socdaa app-ka MECO" → qaabka MECO
+  if (fromMeco && !MECO_KINDS.includes(r.kind)) {
+    chat.mecoMode = true; saveDb(key);
+    if (!r.notCustomer) { chat.isCustomer = true; const g = await mecoCall('ask', { role: 'customer', phone: chat.mecoPhone || chat.phone, text: 'asc' }); return (g.text || '').replace(/^Wcs ([^!]*)!/, 'Ku soo dhowow MECO POWER SUPPLY, $1!') || 'Ku soo dhowow MECO POWER SUPPLY! 👋 Sideen kuu caawin karaa?'; }
+    return 'Ku soo dhowow MECO POWER SUPPLY! 👋 Fadlan noo soo dir lambarka telefoonka ee ku diiwaangashan MECO, si aan xogtaada (deynta, biilka, lacagihii aad bixisay) kuugu sheegno.';
+  }
   // 1) Fariintu MECO ma ku saabsan tahay? → caawinaad MECO (xogta dhabta ah)
   if (MECO_KINDS.includes(r.kind)) {
     if (!r.notCustomer) chat.isCustomer = true;
@@ -663,6 +670,13 @@ async function customerEngine(chat, key) {
       toAdmins(`🙋 *${chat.name || chat.phone || 'Qof'}* (${ses(chat.sid).label}${chat.phone ? ' · ' + chat.phone : ''})${r.notCustomer ? '' : ' · macmiil MECO'}${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku:_ ${String(r.text).split('\n')[0]}`).catch(() => {});
     }
     return r.text;
+  }
+  // Macmiil MECO oo qaabka MECO ku jira → su'aalaha kale AI (xogtiisa)
+  if (chat.mecoMode && !r.notCustomer && r.kind !== 'greet') {
+    try {
+      const sys = CUSTOMER_PROMPT + `\nWaqtiga hadda: ${nowTxt()}\nMagaca macmiilka: ${r.customer || chat.name}\nACCOUNT:\n${JSON.stringify(r.context || {}, null, 1).slice(0, 6000)}\nSu'aalaha guud (diin, taariikh, aqoon) sidoo kale si sax ah uga jawaab.`;
+      return (await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true)).replace(/\[ADMIN\]/gi, '').trim();
+    } catch (e) { console.error('Customer AI:', e.message); }
   }
   // 2) Wax kale (salaan, sheeko gaar ah, su'aal aan MECO ahayn) → xoghaye
   return secretaryReply(chat, key, text);
@@ -674,9 +688,18 @@ async function secretaryReply(chat, key, text) {
   if (!chat.secGreetAt || now - chat.secGreetAt > 24 * 3600 * 1000) {          // hal mar 24-kii saac
     answer = `Soo dhawoow! 👋 Waa xoghayaha ${owner}. Maxaan kaa caawiyaa, mise isaga ayaan kuu gudbiyaa?`;
     chat.secGreetAt = now; chat.secForwardedAt = 0;
-  } else if (!chat.secForwardedAt && /gudbi|isaga|haa\b|haye|ok\b|okey|waan sugayaa|u sheeg|ii sheeg/i.test(text)) {
-    answer = `Waan u gudbiyay ✅ — ${owner} ayaa dhowaan kuu soo jawaabi doona.`;
-    chat.secForwardedAt = now; chat.secNotifiedAt = 0;
+  } else if (/gudbi|isaga ii|isaga u|u sheeg|waan sugayaa|^\s*(haa|haye|ok|okey|okay|hagaag)\s*[.!]*\s*$/i.test(text) && !/ila sheekee|ila hadal|adiga/i.test(text)) {
+    if (!chat.secForwardedAt) { answer = `Waan u gudbiyay ✅ — ${owner} ayaa dhowaan kuu soo jawaabi doona.`; chat.secForwardedAt = now; chat.secNotifiedAt = 0; }
+  } else {
+    // "adiga ila sheekayso" ama su'aal guud → AI (aqoon guud, diin, taariikh…) — si sax ah oo kooban
+    chat.aiChat = true;
+    try {
+      const sys = SECRETARY_PROMPT(owner) + `\nWaqtiga hadda: ${nowTxt()}\nMagaca qofka (WhatsApp): ${chat.name || '—'}\nHorey ayaad isu sheegtay (xoghayaha ${owner}) — ha ku celin. Haddii uu kaa codsado inaad la sheekeysato, si diiran u aqbal oo ka jawaab su'aalihiisa.`;
+      answer = await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true);
+    } catch (e) {
+      console.error('Secretary AI:', e.message);
+      answer = `Waan ka xumahay, hadda si buuxda uma jawaabi karo 🙏 — ${owner} ayaan u gudbinayaa.`;
+    }
   }
   notify();
   saveDb(key);
