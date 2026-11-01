@@ -16,7 +16,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
 } from '@whiskeysockets/baileys';
 import * as store from './store.js';
-import { MECO_TOOLS, ADMIN_PROMPT, runAgent } from './agent.js';
+import { MECO_TOOLS, ADMIN_PROMPT, CUSTOMER_PROMPT, SOMALI_STYLE, runAgent } from './agent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -85,6 +85,7 @@ let db = {
     notifyNumbers: '',     // MECO: lambarada lacag-bixinta loogu sheegayo (comma)
     notifySecret: '',      // MECO: sirta /api/notify (si toos ah ayaa loo sameeyaa)
     customerReceipts: false, // MECO: rasiid WhatsApp ah u dir macmiilka
+    appAutoReply: true,    // MECO: AI-gu ha ka jawaabo fariimaha app-ka
     mecoUrl: 'https://script.google.com/macros/s/AKfycbzOAYE9TIE8-xCGYLQEkiJljVAz-pHl5rIaNaB66fEO_lobtmf9R5N-5Ju7axc0H9A_/exec',
   },
   chats: {},
@@ -191,6 +192,7 @@ async function askAI(chat) {
   const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa' });
   const system = [
     db.settings.systemPrompt,
+    SOMALI_STYLE,
     `\nWaqtiga hadda: ${now}`,
     chat.name ? `Magaca macmiilka (WhatsApp): ${chat.name}` : '',
     knowledge.text ? `\n=== MACLUUMAADKA GANACSIGA (Google Sheet) ===\n${knowledge.text}` : '',
@@ -329,7 +331,7 @@ async function handleMessage(m, type) {
   // MECO AI agent: "Message yourself" chat-ka ama lambarada maamulaha
   if (isAdminMsg(m, phone)) {
     if (ourIds.has(m.key.id) || type !== 'notify') return;
-    return handleAdmin(jid, text);
+    return handleAdmin(jid, text, m);
   }
   const tsMs = Number(m.messageTimestamp || 0) * 1000 || Date.now();
 
@@ -456,12 +458,63 @@ async function execTool(name, args) {
     await sendText(jid, receiptText(d));
     return { sent: true, to: d.customer.Phone, customer: d.customer.Name, receipt: d.payment.Receipt, amount: d.payment.Amount };
   }
+  if (name === 'reply_customer_app') return mecoCall('chat_reply', { ticketNo: args.ticketNo, query: args.query, body: args.message, from: 'admin' });
   if (!MECO_TOOLS.some((t) => t.name === name)) return { error: 'Tool lama yaqaan: ' + name };
   return mecoCall(name, args);
 }
 
+// ---- Fariimaha macaamiisha app-ka MECO → WhatsApp-ka maamulaha + AI jawaab → app-ka
+function adminJids() {
+  const l = String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean);
+  if (!l.length && sock?.user?.id) l.push(userPart(sock.user.id) + '@s.whatsapp.net');
+  return l;
+}
+async function toAdmins(text) {
+  if (!wa.connected) { adminJids().forEach((jid) => notifyQueue.push({ jid, text })); return; }
+  for (const jid of adminJids()) { try { await sendText(jid, text); } catch (e) { notifyQueue.push({ jid, text }); } }
+}
+async function handleAppMessage(x) {
+  const who = `${x.customer || 'Macmiil'}${x.phone ? ' · ' + x.phone : ''}`;
+  await toAdmins(`📱 *${x.customer || 'Macmiil'}* — app-ka MECO\n📞 ${x.phone || '—'} · ${x.ticketNo}\n\n${x.text}\n\n_↩️ Reply garee fariintan si aad ugu jawaabto app-ka._`);
+  if (db.settings.appAutoReply === false) return;
+  // AI jawaab (xogta macmiilkan oo kaliya)
+  const hist = [];
+  for (const h of (x.history || []).slice(-12)) {
+    const role = h.role === 'user' ? 'user' : 'assistant';
+    const last = hist[hist.length - 1];
+    if (last && last.role === role) last.content += '\n' + h.text; else hist.push({ role, content: String(h.text || '') });
+  }
+  while (hist.length && hist[0].role !== 'user') hist.shift();
+  if (!hist.length || hist[hist.length - 1].role !== 'user') hist.push({ role: 'user', content: x.text });
+  const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
+  const system = CUSTOMER_PROMPT + `\nWaqtiga hadda: ${now}\nMagaca macmiilka: ${x.customer}\nACCOUNT (xogta macmiilkan):\n${JSON.stringify(x.context || {}, null, 1).slice(0, 6000)}`;
+  let answer;
+  try { answer = await tryModels((cfg) => callAI(cfg, system, hist)); }
+  catch (e) { console.error('App AI error:', e.message); return toAdmins(`⚠️ AI-gu kama jawaabin ${who} (${x.ticketNo}): ${e.message}\n_Reply garee fariinta kore si aad adigu ugu jawaabto._`); }
+  const escalate = /\[ADMIN\]/i.test(answer);
+  answer = answer.replace(/\[ADMIN\]/gi, '').trim();
+  if (!answer) return;
+  const r = await mecoCall('chat_reply', { ticketId: x.ticketId, body: answer, from: 'bot' });
+  await toAdmins(`🤖 *MECO Bot → ${x.customer}* (${x.ticketNo})\n${answer}${r.error ? '\n\n⚠️ App-ka lama gaarsiin: ' + r.error : ''}${escalate ? '\n\n🙋 *Wuxuu u baahan yahay adiga* — Reply garee fariinta macmiilka si aad ugu jawaabto.' : ''}`);
+}
+
 const adminHistory = new Map();
-async function handleAdmin(jid, text) {
+function quotedText(m) {
+  const msg = m.message || {};
+  const ctx = msg.extendedTextMessage?.contextInfo || msg.imageMessage?.contextInfo || msg.conversation?.contextInfo;
+  const q = ctx?.quotedMessage;
+  return q ? (q.conversation || q.extendedTextMessage?.text || q.imageMessage?.caption || '') : '';
+}
+async function handleAdmin(jid, text, m) {
+  // Jawaab macmiil app-ka: Reply fariinta (CK-xxxxx) ama "/j CK-00012 qoraal"
+  const qt = m ? quotedText(m) : '';
+  let ck = (qt.match(/\bCK-\d+/i) || [])[0], body = text;
+  const jm = text.match(/^\/j\s+(CK-\d+)\s+([\s\S]+)$/i);
+  if (jm) { ck = jm[1]; body = jm[2]; }
+  if (ck && !/^\/?(reset|cusub|clear)$/i.test(text.trim())) {
+    const r = await mecoCall('chat_reply', { ticketNo: ck.toUpperCase(), body, from: 'admin' });
+    return sendText(jid, r.error ? '⚠️ Lama dirin: ' + r.error : `✅ Waa loo diray *${r.customer}* (app-ka · ${r.ticketNo})`);
+  }
   const h = adminHistory.get(jid) || [];
   if (/^\/?(reset|cusub|clear)$/i.test(text.trim())) { adminHistory.delete(jid); return sendText(jid, '🔄 Sheekada waa la tirtiray.'); }
   h.push({ role: 'user', content: text });
@@ -565,9 +618,11 @@ app.get('/health', (req, res) => res.json({ ok: true, connected: wa.connected, u
 app.post('/api/notify', async (req, res) => {
   const b = req.body || {};
   if (!b.secret || b.secret !== db.settings.notifySecret) return res.status(401).json({ ok: false, error: 'Secret khaldan' });
-  const list = Array.isArray(b.items) ? b.items.slice(0, 100) : [b];
-  const items = list.flatMap((x) => buildNotifications(x || {}));
-  if (!items.length) return res.status(400).json({ ok: false, error: 'Lambar ama fariin lama helin (eeg Habaynta → MECO)' });
+  const list = (Array.isArray(b.items) ? b.items.slice(0, 100) : [b]).filter(Boolean);
+  const appMsgs = list.filter((x) => x.type === 'app_message');
+  appMsgs.forEach((x) => handleAppMessage(x).catch((e) => console.error('App message error:', e.message)));
+  const items = list.filter((x) => x.type !== 'app_message').flatMap((x) => buildNotifications(x));
+  if (!items.length && !appMsgs.length) return res.status(400).json({ ok: false, error: 'Lambar ama fariin lama helin (eeg Habaynta → MECO)' });
   for (const it of items) notifyQueue.push(it);
   if (notifyQueue.length > 500) notifyQueue.splice(0, notifyQueue.length - 500);
   await flushNotifyQueue();
@@ -663,6 +718,7 @@ app.post('/api/settings', (req, res) => {
     ...(s.ignoreNumbers !== undefined && { ignoreNumbers: String(s.ignoreNumbers) }),
     ...(s.notifyNumbers !== undefined && { notifyNumbers: String(s.notifyNumbers) }),
     ...(s.customerReceipts !== undefined && { customerReceipts: !!s.customerReceipts }),
+    ...(s.appAutoReply !== undefined && { appAutoReply: !!s.appAutoReply }),
     ...(s.mecoUrl !== undefined && { mecoUrl: String(s.mecoUrl).trim() }),
     ...(s.aiProvider && PROVIDERS[s.aiProvider] && { aiProvider: s.aiProvider }),
     ...(s.aiModel !== undefined && { aiModel: String(s.aiModel).trim() }),

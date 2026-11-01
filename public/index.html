@@ -136,6 +136,7 @@
         <div style="font-size:13px;color:var(--m)">Mar kasta oo lacag laga qaado macmiil MECO app-ka, WhatsApp ayaa loogu sheegayaa lambarada hoose.</div>
         <label>Lambarada ogeysiiska helaya (comma u kala saar, tusaale 0911223344, 0922334455)</label><input id="sNotify">
         <label style="display:flex;align-items:center;gap:8px;color:var(--t);font-size:14px;margin-top:14px"><input type="checkbox" id="sReceipt" style="width:auto"> Macmiilka u dir rasiid WhatsApp ah (haddii lambarkiisu jiro)</label>
+        <label style="display:flex;align-items:center;gap:8px;color:var(--t);font-size:14px;margin-top:10px"><input type="checkbox" id="sAuto" style="width:auto"> 🤖 AI-gu ha ka jawaabo fariimaha macaamiisha app-ka (adigana WhatsApp ayay kuugu imanayaan)</label>
         <label>MECO Apps Script URL (/exec) — AI agent-ku halkan ayuu xogta ka akhriyaa</label><input id="sMeco">
         <div style="font-size:12px;color:var(--m);margin-top:8px">🤖 <b>AI agent:</b> WhatsApp-kaaga fur chat-ka <b>"Message yourself"</b> (ama ka soo qor lambarada kor ku qoran) oo weydii: <i>"Cali Xasan caawa ma laga qaaday?"</i>, <i>"yaa caawa aan la bixin?"</i>, <i>"u dir rasiidka Faadumo"</i>, <i>"warbixinta xalay"</i>.</div>
         <div class="row"><button class="btn pri" id="saveNotify">💾 Kaydi</button><button class="btn" id="testNotify">📨 Dir ogeysiis tijaabo ah</button></div>
@@ -279,7 +280,7 @@ async function loadSettings() {
   $('#sProv').innerHTML = (s.providers || []).map(p => `<option ${p === s.aiProvider ? 'selected' : ''}>${p}</option>`).join('');
   $('#keyHint').textContent = s.aiKeySet ? '✓ la geliyay ' + s.aiKeyHint : '⚠️ lama gelin';
   $('#sModel').value = s.aiModel || ''; $('#sModel').placeholder = s.aiModelDefault || ''; $('#sKey').value = '';
-  $('#sNotify').value = s.notifyNumbers || ''; $('#sReceipt').checked = !!s.customerReceipts; $('#sMeco').value = s.mecoUrl || '';
+  $('#sNotify').value = s.notifyNumbers || ''; $('#sReceipt').checked = !!s.customerReceipts; $('#sMeco').value = s.mecoUrl || ''; $('#sAuto').checked = s.appAutoReply !== false;
   $('#gasSnippet').textContent = gasCode(location.origin, s.notifySecret);
 }
 function gasCode(url, secret) {
@@ -324,7 +325,7 @@ $('#saveAi').onclick = async () => {
 };
 $('#sProv').onchange = () => { $('#sModel').value = ''; };
 $('#saveNotify').onclick = async () => {
-  await api('/api/settings', { method: 'POST', body: { notifyNumbers: $('#sNotify').value, customerReceipts: $('#sReceipt').checked, mecoUrl: $('#sMeco').value } });
+  await api('/api/settings', { method: 'POST', body: { notifyNumbers: $('#sNotify').value, customerReceipts: $('#sReceipt').checked, mecoUrl: $('#sMeco').value, appAutoReply: $('#sAuto').checked } });
   toast('✅ Waa la kaydiyay');
 };
 $('#testNotify').onclick = async () => {
