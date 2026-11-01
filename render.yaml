@@ -11,7 +11,7 @@ services:
       - key: NODE_VERSION
         value: "22"
       - key: AI_PROVIDER
-        value: gemini
+        value: zen
       - key: AI_API_KEY
         sync: false
       - key: ADMIN_PASSWORD

@@ -50,10 +50,11 @@ Login-ku Supabase ayuu ku kaydsan yahay — server-ku haddii uu dib u kaco ama a
 - 🧪 Habaynta → AI-ga tijaabi adigoon WhatsApp isticmaalin
 
 ## 🤖 AI kale ku beddel
-Render → Environment → `AI_PROVIDER` beddel:
+Dashboard → **Habaynta → AI** (ama Render → Environment → `AI_PROVIDER`):
 | AI_PROVIDER | Qiimo | Key |
 |---|---|---|
-| `gemini` (default) | Bilaash | https://aistudio.google.com/apikey |
+| `zen` (default — OpenCode Zen) | Model-yo bilaash ah (`deepseek-v4-flash-free` …) | https://opencode.ai/zen |
+| `gemini` | Bilaash (xaddid) | https://aistudio.google.com/apikey |
 | `groq` | Bilaash | https://console.groq.com/keys |
 | `openrouter` | Bilaash (models `:free`) | https://openrouter.ai/keys |
 | `openai` | Lacag | https://platform.openai.com/api-keys |

@@ -21,26 +21,43 @@ import { MECO_TOOLS, ADMIN_PROMPT, runAgent } from './agent.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
-// AI provider: gemini (bilaash) | groq (bilaash) | openrouter | openai | claude
-const AI_PROVIDER = (process.env.AI_PROVIDER || 'gemini').toLowerCase();
+// AI provider: zen (OpenCode Zen) | gemini | groq | openrouter | openai | claude
+// Dashboard-ka (Habaynta → AI) ayaa laga beddeli karaa; env-ku waa default.
+const ENV_PROVIDER = (process.env.AI_PROVIDER || 'zen').toLowerCase();
 const PROVIDERS = {
+  zen:        { model: 'deepseek-v4-flash-free,qwen3.6-plus-free,mimo-v2.5-free,big-pickle', base: 'https://opencode.ai/zen/v1' },
   gemini:     { model: 'gemini-2.5-flash' },
   groq:       { model: 'llama-3.3-70b-versatile', base: 'https://api.groq.com/openai/v1' },
   openrouter: { model: 'meta-llama/llama-3.3-70b-instruct:free', base: 'https://openrouter.ai/api/v1' },
   openai:     { model: 'gpt-4o-mini', base: 'https://api.openai.com/v1' },
   claude:     { model: 'claude-haiku-5-5' },
 };
-if (!PROVIDERS[AI_PROVIDER]) { console.error(`❌ AI_PROVIDER "${AI_PROVIDER}" lama yaqaan. Dooro: ${Object.keys(PROVIDERS).join(', ')}`); process.exit(1); }
-const AI_MODEL = process.env.AI_MODEL || PROVIDERS[AI_PROVIDER].model;
-const AI_KEY = process.env.AI_API_KEY || '';
+function aiCfg() {
+  const st = (typeof db !== 'undefined' && db.settings) || {};
+  let provider = String(st.aiProvider || ENV_PROVIDER).toLowerCase();
+  if (!PROVIDERS[provider]) provider = 'zen';
+  const sameAsEnv = provider === ENV_PROVIDER;
+  const key = st.aiKey || (sameAsEnv ? process.env.AI_API_KEY || '' : '');
+  const modelStr = st.aiModel || (sameAsEnv && process.env.AI_MODEL) || PROVIDERS[provider].model;
+  return { provider, key, base: PROVIDERS[provider].base, models: modelStr.split(',').map((x) => x.trim()).filter(Boolean) };
+}
+const stripThink = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+// Model-yada isku day mid mid — haddii mid xaddid (429) ama khalad gaaro, kan xiga
+async function tryModels(fn) {
+  const cfg = aiCfg();
+  if (!cfg.key) throw new Error('AI key lama gelin — Dashboard → Habaynta → AI');
+  let last;
+  for (const model of cfg.models) {
+    try { return stripThink(await fn({ ...cfg, model })); }
+    catch (e) { last = e; console.error(`AI ${cfg.provider}/${model}:`, e.message); }
+  }
+  throw last;
+}
 const SHEET_URL = (process.env.SHEET_WEBAPP_URL || '').trim();
 const SHEET_SECRET = process.env.SHEET_SECRET || '';
 const PUBLIC_URL = (process.env.PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
 
-if (!AI_KEY) {
-  console.error('❌ AI_API_KEY ma jiro (Environment variables). Gemini key bilaash ah: https://aistudio.google.com/apikey');
-  process.exit(1);
-}
+if (!process.env.AI_API_KEY) console.warn('⚠️ AI_API_KEY env ma jiro — dashboard-ka (Habaynta → AI) ka geli');
 if (ADMIN_PASSWORD.length < 6) {
   console.error('❌ ADMIN_PASSWORD geli (ugu yaraan 6 xaraf) — dashboard-ku waa online, waa in la ilaaliyaa');
   process.exit(1);
@@ -179,18 +196,18 @@ async function askAI(chat) {
     knowledge.text ? `\n=== MACLUUMAADKA GANACSIGA (Google Sheet) ===\n${knowledge.text}` : '',
   ].filter(Boolean).join('\n');
 
-  return callAI(system, messages);
+  return tryModels((cfg) => callAI(cfg, system, messages));
 }
 
 async function postJSON(url, headers, body) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`${AI_PROVIDER} ${r.status}: ${j.error?.message || JSON.stringify(j).slice(0, 200)}`);
+  if (!r.ok) throw new Error(`${r.status}: ${j.error?.message || JSON.stringify(j).slice(0, 200)}`);
   return j;
 }
 
-async function callAI(system, messages) {
-  if (AI_PROVIDER === 'gemini') {
+async function callAI({ provider, model: AI_MODEL, key: AI_KEY, base }, system, messages) {
+  if (provider === 'gemini') {
     const j = await postJSON(
       `https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent`,
       { 'x-goog-api-key': AI_KEY },
@@ -203,17 +220,19 @@ async function callAI(system, messages) {
     if (!text) throw new Error('Gemini jawaab ma soo celin (' + (j.candidates?.[0]?.finishReason || j.promptFeedback?.blockReason || '?') + ')');
     return text;
   }
-  if (AI_PROVIDER === 'claude') {
+  if (provider === 'claude') {
     const j = await postJSON('https://api.anthropic.com/v1/messages',
       { 'x-api-key': AI_KEY, 'anthropic-version': '2023-06-01' },
       { model: AI_MODEL, max_tokens: 600, system, messages });
     return (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
   }
-  // OpenAI-compatible: groq, openrouter, openai
-  const j = await postJSON(`${PROVIDERS[AI_PROVIDER].base}/chat/completions`,
+  // OpenAI-compatible: zen, groq, openrouter, openai
+  const j = await postJSON(`${base}/chat/completions`,
     { Authorization: `Bearer ${AI_KEY}` },
     { model: AI_MODEL, max_tokens: 600, temperature: 0.6, messages: [{ role: 'system', content: system }, ...messages] });
-  return (j.choices?.[0]?.message?.content || '').trim();
+  const text = stripThink(j.choices?.[0]?.message?.content || '');
+  if (!text) throw new Error('jawaab madhan');
+  return text;
 }
 
 // -------------------------------------------------------------
@@ -452,8 +471,8 @@ async function handleAdmin(jid, text) {
   await sock.sendPresenceUpdate('composing', jid).catch(() => {});
   try {
     const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
-    const answer = await runAgent({ provider: AI_PROVIDER, model: AI_MODEL, key: AI_KEY, base: PROVIDERS[AI_PROVIDER].base,
-      system: ADMIN_PROMPT + `\nWaqtiga hadda: ${now} (Africa/Addis_Ababa).`, history: h, tools: MECO_TOOLS, exec: execTool });
+    const answer = await tryModels((cfg) => runAgent({ ...cfg,
+      system: ADMIN_PROMPT + `\nWaqtiga hadda: ${now} (Africa/Addis_Ababa).`, history: h, tools: MECO_TOOLS, exec: execTool }));
     const reply = answer || '…';
     h.push({ role: 'assistant', content: reply });
     await sendText(jid, '🤖 ' + reply);
@@ -567,7 +586,7 @@ app.get('/api/status', (req, res) => {
   const chats = Object.values(db.chats);
   res.json({
     connected: wa.connected, qr: wa.qr, me: wa.me, lastError: wa.lastError,
-    botEnabled: db.settings.botEnabled, model: `${AI_PROVIDER} · ${AI_MODEL}`,
+    botEnabled: db.settings.botEnabled, model: `${aiCfg().provider} · ${aiCfg().models[0] || '-'}`,
     sheet: { configured: !!SHEET_URL, ...knowledge, text: undefined, chars: knowledge.text.length },
     stats: {
       chats: chats.length,
@@ -624,7 +643,13 @@ app.delete('/api/chats/:jid', (req, res) => {
   dirtyChats.delete(req.params.jid); delete db.chats[req.params.jid]; store.deleteChat(req.params.jid); res.json({ ok: true });
 });
 
-app.get('/api/settings', (req, res) => res.json(db.settings));
+const publicSettings = () => {
+  const { aiKey, ...rest } = db.settings;
+  const cfg = aiCfg();
+  return { ...rest, aiProvider: cfg.provider, aiModel: db.settings.aiModel || '', aiModelDefault: PROVIDERS[cfg.provider].model,
+    aiKeySet: !!cfg.key, aiKeyHint: cfg.key ? '••••' + cfg.key.slice(-4) : '', providers: Object.keys(PROVIDERS) };
+};
+app.get('/api/settings', (req, res) => res.json(publicSettings()));
 app.post('/api/settings', (req, res) => {
   const s = req.body || {};
   const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : d);
@@ -639,12 +664,15 @@ app.post('/api/settings', (req, res) => {
     ...(s.notifyNumbers !== undefined && { notifyNumbers: String(s.notifyNumbers) }),
     ...(s.customerReceipts !== undefined && { customerReceipts: !!s.customerReceipts }),
     ...(s.mecoUrl !== undefined && { mecoUrl: String(s.mecoUrl).trim() }),
+    ...(s.aiProvider && PROVIDERS[s.aiProvider] && { aiProvider: s.aiProvider }),
+    ...(s.aiModel !== undefined && { aiModel: String(s.aiModel).trim() }),
+    ...(s.aiKey && !String(s.aiKey).startsWith('••') && { aiKey: String(s.aiKey).trim() }),
   };
   saveDb();
-  res.json(db.settings);
+  res.json(publicSettings());
 });
 app.post('/api/settings/reset-prompt', (req, res) => {
-  db.settings.systemPrompt = DEFAULT_PROMPT; saveDb(); res.json(db.settings);
+  db.settings.systemPrompt = DEFAULT_PROMPT; saveDb(); res.json(publicSettings());
 });
 
 app.post('/api/knowledge/refresh', async (req, res) => {
@@ -664,8 +692,8 @@ app.post('/api/test', async (req, res) => {
 app.post('/api/agent/test', async (req, res) => {
   try {
     const h = (req.body.messages || []).map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
-    const answer = await runAgent({ provider: AI_PROVIDER, model: AI_MODEL, key: AI_KEY, base: PROVIDERS[AI_PROVIDER].base,
-      system: ADMIN_PROMPT, history: h, tools: MECO_TOOLS.filter((t) => t.name !== 'send_receipt'), exec: execTool });
+    const answer = await tryModels((cfg) => runAgent({ ...cfg,
+      system: ADMIN_PROMPT, history: h, tools: MECO_TOOLS.filter((t) => t.name !== 'send_receipt'), exec: execTool }));
     res.json({ answer });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

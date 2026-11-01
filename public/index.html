@@ -123,6 +123,14 @@
         <label>Lambarro bot-ku iska dhaafo (comma u kala saar, tusaale 2519xxxxxxx)</label><input id="sIgnore">
         <div class="row"><button class="btn pri" id="saveSet2">💾 Kaydi</button></div>
       </div>
+      <div class="card" style="grid-column:1/-1;border-color:#7c3aed">
+        <h3>🤖 AI-ga (Provider & Key)</h3>
+        <div style="font-size:13px;color:var(--m)">OpenCode Zen: key ka hel <b>opencode.ai/zen</b>. Model-yada comma ku kala saar — haddii midka hore xaddid gaaro, kan xiga ayaa si toos ah loo isticmaalayaa.</div>
+        <label>Provider</label><select id="sProv" style="width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);background:var(--p2);color:var(--t)"></select>
+        <label>API key <span id="keyHint" style="color:var(--g)"></span></label><input id="sKey" type="password" placeholder="Geli key cusub (madhan = ha beddelin)">
+        <label>Model-yada (madhan = default)</label><input id="sModel">
+        <div class="row"><button class="btn pri" id="saveAi">💾 Kaydi AI</button></div>
+      </div>
       <div class="card" style="grid-column:1/-1;border-color:#1e3a8a">
         <h3>⚡ MECO POWER SUPPLY — Ogeysiisyada lacag-bixinta</h3>
         <div style="font-size:13px;color:var(--m)">Mar kasta oo lacag laga qaado macmiil MECO app-ka, WhatsApp ayaa loogu sheegayaa lambarada hoose.</div>
@@ -268,6 +276,9 @@ async function loadSettings() {
   const s = await api('/api/settings');
   $('#sPrompt').value = s.systemPrompt; $('#sPause').value = s.pauseMinutes;
   $('#sBatch').value = s.batchSeconds; $('#sAge').value = s.maxAgeMinutes; $('#sIgnore').value = s.ignoreNumbers;
+  $('#sProv').innerHTML = (s.providers || []).map(p => `<option ${p === s.aiProvider ? 'selected' : ''}>${p}</option>`).join('');
+  $('#keyHint').textContent = s.aiKeySet ? '✓ la geliyay ' + s.aiKeyHint : '⚠️ lama gelin';
+  $('#sModel').value = s.aiModel || ''; $('#sModel').placeholder = s.aiModelDefault || ''; $('#sKey').value = '';
   $('#sNotify').value = s.notifyNumbers || ''; $('#sReceipt').checked = !!s.customerReceipts; $('#sMeco').value = s.mecoUrl || '';
   $('#gasSnippet').textContent = gasCode(location.origin, s.notifySecret);
 }
@@ -305,6 +316,13 @@ function testWhatsApp() {
 // --- Function-ka lacagta kaydiya gudihiisa, marka safka la qoro kadib, ku dar:
 // waNotifyPayment_({ customer: name, phone: phone, amount: amount, method: method, plan: plan, staff: staffName });`;
 }
+$('#saveAi').onclick = async () => {
+  try {
+    await api('/api/settings', { method: 'POST', body: { aiProvider: $('#sProv').value, aiModel: $('#sModel').value, ...($('#sKey').value ? { aiKey: $('#sKey').value } : {}) } });
+    await loadSettings(); loadStatus(); toast('✅ AI-ga waa la kaydiyay');
+  } catch (e) { toast('❌ ' + e.message); }
+};
+$('#sProv').onchange = () => { $('#sModel').value = ''; };
 $('#saveNotify').onclick = async () => {
   await api('/api/settings', { method: 'POST', body: { notifyNumbers: $('#sNotify').value, customerReceipts: $('#sReceipt').checked, mecoUrl: $('#sMeco').value } });
   toast('✅ Waa la kaydiyay');
