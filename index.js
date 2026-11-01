@@ -636,9 +636,15 @@ async function adminEngine(jid, text, sid = 'main') {
     return sendText(jid, r.text || '…', sid);
   } finally { presence(sid, 'paused', jid); }
 }
-// 🧠 Macaamiisha WhatsApp-ka: macmiil MECO → xogtiisa (maskaxda + AI); qof kale → xoghaye (AI caadi ah)
+// 🧠 WhatsApp: caawinaad MECO KALIYA marka fariintu MECO ku saabsan tahay. Qof kasta oo kale (macmiil iyo qof caadi ah):
+//    hal mar "Soo dhawoow, waa xoghayaha <magaca>. Maxaan kaa caawiyaa, mise isaga ayaan kuu gudbiyaa?" — kadibna aamus (adiga ayaa laguu gudbiyaa).
 const nowTxt = () => new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
-const ownerName = (sid) => db.settings.secretaryFor || ses(sid).sock?.user?.name || ses(sid).sock?.user?.verifiedName || 'milkiilaha lambarkan';
+const MECO_KINDS = ['due', 'credit', 'lastpay', 'history', 'next', 'collect', 'payhow', 'price', 'register', 'contact', 'fault', 'complain'];
+function cleanName(n) {
+  const w = String(n || '').replace(/[{(\[].*?[})\]]/g, ' ').replace(/[^\p{L}\s'-]/gu, ' ').trim().split(/\s+/)[0] || '';
+  return w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : '';
+}
+const ownerName = (sid) => (sid === 's2' ? db.settings.secretaryFor2 : db.settings.secretaryFor) || cleanName(ses(sid).sock?.user?.name || ses(sid).sock?.user?.verifiedName) || 'milkiilaha';
 async function customerEngine(chat, key) {
   const pend = [];
   for (let i = chat.messages.length - 1; i >= 0 && chat.messages[i].role === 'user'; i--) pend.unshift(chat.messages[i].text);
@@ -646,42 +652,35 @@ async function customerEngine(chat, key) {
   let r = await mecoCall('ask', { role: 'customer', phone: chat.mecoPhone || chat.phone, text });
   if (r.notCustomer) {   // lambarka uu qoraalka ku sheegay ma yahay macmiil MECO?
     const d = text.replace(/\D/g, '');
-    if (d.length >= 9) { const r2 = await mecoCall('ask', { role: 'customer', phone: d, text }); if (!r2.notCustomer && !r2.error) { chat.mecoPhone = d; saveDb(key); r = r2; } }
+    if (d.length >= 9) { const r2 = await mecoCall('ask', { role: 'customer', phone: d, text: 'deyntayda' }); if (!r2.notCustomer && !r2.error) { chat.mecoPhone = d; saveDb(key); r = r2; } }
   }
   if (r.error) throw new Error('MECO: ' + r.error);
-  if (r.notCustomer) return secretaryReply(chat, key, text);
-  chat.isCustomer = true;
-  let answer = r.text, escalate = !!r.escalate;
-  if (r.kind === 'unknown') {     // su'aal aan xogta ahayn → AI (xogta macmiilkan)
-    try {
-      const sys = CUSTOMER_PROMPT + `\nWaqtiga hadda: ${nowTxt()}\nMagaca macmiilka: ${r.customer}\nACCOUNT:\n${JSON.stringify(r.context || {}, null, 1).slice(0, 6000)}`;
-      const a = await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true);
-      escalate = /\[ADMIN\]/i.test(a); answer = a.replace(/\[ADMIN\]/gi, '').trim() || r.text;
-    } catch (e) { console.error('Customer AI:', e.message); }
+  // 1) Fariintu MECO ma ku saabsan tahay? → caawinaad MECO (xogta dhabta ah)
+  if (MECO_KINDS.includes(r.kind)) {
+    if (!r.notCustomer) chat.isCustomer = true;
+    if ((r.escalate || r.kind === 'fault') && !chat.test) {
+      chat.needsHuman = true; saveDb(key);
+      toAdmins(`🙋 *${chat.name || chat.phone || 'Qof'}* (${ses(chat.sid).label}${chat.phone ? ' · ' + chat.phone : ''})${r.notCustomer ? '' : ' · macmiil MECO'}${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku:_ ${String(r.text).split('\n')[0]}`).catch(() => {});
+    }
+    return r.text;
   }
-  if (escalate && !chat.test) {
-    chat.needsHuman = true; saveDb(key);
-    toAdmins(`🙋 *${chat.name || chat.phone || 'Macmiil'}* (${ses(chat.sid).label}${chat.phone ? ' · ' + chat.phone : ''})${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_ ${answer.split('\n')[0]}`).catch(() => {});
-  }
-  return answer;
+  // 2) Wax kale (salaan, sheeko gaar ah, su'aal aan MECO ahayn) → xoghaye
+  return secretaryReply(chat, key, text);
 }
 async function secretaryReply(chat, key, text) {
-  const owner = ownerName(chat.sid), first = !chat.secGreeted;
-  let answer;
-  try {
-    const sys = SECRETARY_PROMPT(owner) + `\nWaqtiga hadda: ${nowTxt()}\nMagaca qofka (WhatsApp): ${chat.name || '—'}${first ? '\nTani waa fariintiisa ugu horreysa — isku sheeg xoghayaha.' : ''}`;
-    answer = await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true);
-  } catch (e) {
-    console.error('Secretary AI:', e.message);
-    answer = first ? `Asc${chat.name ? ' ' + chat.name.split(' ')[0] : ''}! 👋 Waxaan ahay xoghayaha ${owner}. Fariintaada wuu arki doonaa, dhowaan ayuu kuu soo jawaabi doonaa.` : `Fariintaada waa la helay ✅ — ${owner} ayaa dhowaan kuu soo jawaabi doona.`;
+  const owner = ownerName(chat.sid), now = Date.now();
+  const notify = () => { if (!chat.test && (!chat.secNotifiedAt || now - chat.secNotifiedAt > 30 * 60 * 1000)) { chat.secNotifiedAt = now; toAdmins(`📩 *${chat.name || chat.phone || 'Qof'}*${chat.phone ? ' (' + chat.phone + ')' : ''} — ${ses(chat.sid).label}\n\n${text}`).catch(() => {}); } };
+  let answer = null;
+  if (!chat.secGreetAt || now - chat.secGreetAt > 24 * 3600 * 1000) {          // hal mar 24-kii saac
+    answer = `Soo dhawoow! 👋 Waa xoghayaha ${owner}. Maxaan kaa caawiyaa, mise isaga ayaan kuu gudbiyaa?`;
+    chat.secGreetAt = now; chat.secForwardedAt = 0;
+  } else if (!chat.secForwardedAt && /gudbi|isaga|haa\b|haye|ok\b|okey|waan sugayaa|u sheeg|ii sheeg/i.test(text)) {
+    answer = `Waan u gudbiyay ✅ — ${owner} ayaa dhowaan kuu soo jawaabi doona.`;
+    chat.secForwardedAt = now; chat.secNotifiedAt = 0;
   }
-  chat.secGreeted = true;
-  if (!chat.test && (!chat.secNotifiedAt || Date.now() - chat.secNotifiedAt > 30 * 60 * 1000)) {
-    chat.secNotifiedAt = Date.now();
-    toAdmins(`📩 *${chat.name || chat.phone || 'Qof'}*${chat.phone ? ' (' + chat.phone + ')' : ''} — ${ses(chat.sid).label} · ma aha macmiil MECO\n\n${text}\n\n🤖 _Xoghayaha:_ ${answer.slice(0, 300)}`).catch(() => {});
-  }
+  notify();
   saveDb(key);
-  return answer;
+  return answer;                                                                 // null = aamus (adiga ayaa jawaabaya)
 }
 const adminHistory = new Map();
 function quotedText(m) {
@@ -925,6 +924,7 @@ app.post('/api/settings', (req, res) => {
     ...(s.appAutoReply !== undefined && { appAutoReply: !!s.appAutoReply }),
     ...(s.useAI !== undefined && { useAI: !!s.useAI }),
     ...(s.secretaryFor !== undefined && { secretaryFor: String(s.secretaryFor).trim() }),
+    ...(s.secretaryFor2 !== undefined && { secretaryFor2: String(s.secretaryFor2).trim() }),
     ...(s.mecoUrl !== undefined && { mecoUrl: String(s.mecoUrl).trim() }),
     ...(s.aiProvider && PROVIDERS[s.aiProvider] && { aiProvider: s.aiProvider }),
     ...(s.aiModel !== undefined && { aiModel: String(s.aiModel).trim() }),

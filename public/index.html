@@ -127,7 +127,7 @@
         <h3>🤖 AI-ga (Provider & Key)</h3>
         <div style="font-size:13px;color:var(--m)">OpenCode Zen: key ka hel <b>opencode.ai/zen</b>. Model-yada comma ku kala saar — haddii midka hore xaddid gaaro, kan xiga ayaa si toos ah loo isticmaalayaa.</div>
         <div style="font-size:13px;color:var(--m);margin-top:6px">✅ <b>Pollinations (GPT)</b> — bilaash, key la'aan — ayaa had iyo jeer shaqeynaya. Key-yada hoose waa ikhtiyaari (kayd).</div>
-        <label>Xoghaye: magaca qofka (dadka aan macmiilka MECO ahayn waxaa loo sheegayaa "Waxaan ahay xoghayaha …"). Madhan = magaca WhatsApp-ka</label><input id="sSec" placeholder="tusaale: Duale">
+        <label>Xoghaye: magaca qofka (dadka aan macmiilka MECO ahayn waxaa loo sheegayaa "Waxaan ahay xoghayaha …"). Madhan = magaca WhatsApp-ka</label><input id="sSec" placeholder="WhatsApp 1 — tusaale: Duale"><input id="sSec2" placeholder="WhatsApp 2 — magaca" style="margin-top:6px">
         <input type="checkbox" id="sUseAI" style="display:none">
         <label>⭐ Google Gemini key — af-Soomaali ugu fiican (bilaash: aistudio.google.com/apikey) <span id="gHint" style="color:var(--g)"></span></label><input id="sGem" type="password" placeholder="AIza… (madhan = ha beddelin)">
         <div style="font-size:12px;color:var(--m);margin-top:6px">Gemini ayaa marka hore la isticmaalayaa (4 model, xaddid kasta gooni); haddii ay dhammaadaan → provider-ka hoose.</div>
@@ -291,7 +291,7 @@ async function loadSettings() {
   $('#sPrompt').value = s.systemPrompt; $('#sPause').value = s.pauseMinutes;
   $('#sBatch').value = s.batchSeconds; $('#sAge').value = s.maxAgeMinutes; $('#sIgnore').value = s.ignoreNumbers;
   $('#sProv').innerHTML = (s.providers || []).map(p => `<option ${p === s.aiProvider ? 'selected' : ''}>${p}</option>`).join('');
-  $('#sUseAI').checked = !!s.useAI; $('#sSec').value = s.secretaryFor || '';
+  $('#sUseAI').checked = !!s.useAI; $('#sSec').value = s.secretaryFor || ''; $('#sSec2').value = s.secretaryFor2 || '';
   $('#gHint').textContent = s.geminiSet ? '✓ ' + s.geminiHint : '⚠️ lama gelin'; $('#sGem').value = '';
   $('#keyHint').textContent = s.aiKeySet ? '✓ la geliyay ' + s.aiKeyHint : '⚠️ lama gelin';
   $('#sModel').value = s.aiModel || ''; $('#sModel').placeholder = s.aiModelDefault || ''; $('#sKey').value = '';
@@ -334,7 +334,7 @@ function testWhatsApp() {
 }
 $('#saveAi').onclick = async () => {
   try {
-    await api('/api/settings', { method: 'POST', body: { secretaryFor: $('#sSec').value, aiProvider: $('#sProv').value, aiModel: $('#sModel').value, ...($('#sKey').value ? { aiKey: $('#sKey').value } : {}), ...($('#sGem').value ? { geminiKey: $('#sGem').value } : {}) } });
+    await api('/api/settings', { method: 'POST', body: { secretaryFor: $('#sSec').value, secretaryFor2: $('#sSec2').value, aiProvider: $('#sProv').value, aiModel: $('#sModel').value, ...($('#sKey').value ? { aiKey: $('#sKey').value } : {}), ...($('#sGem').value ? { geminiKey: $('#sGem').value } : {}) } });
     await loadSettings(); loadStatus(); toast('✅ AI-ga waa la kaydiyay');
   } catch (e) { toast('❌ ' + e.message); }
 };
