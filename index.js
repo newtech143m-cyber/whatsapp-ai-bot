@@ -16,7 +16,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
 } from '@whiskeysockets/baileys';
 import * as store from './store.js';
-import { MECO_TOOLS, ADMIN_PROMPT, CUSTOMER_PROMPT, SOMALI_STYLE, runAgent } from './agent.js';
+import { MECO_TOOLS, ADMIN_PROMPT, CUSTOMER_PROMPT, SECRETARY_PROMPT, SOMALI_STYLE, runAgent } from './agent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -25,10 +25,11 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 // Dashboard-ka (Habaynta → AI) ayaa laga beddeli karaa; env-ku waa default.
 const ENV_PROVIDER = (process.env.AI_PROVIDER || 'zen').toLowerCase();
 const PROVIDERS = {
+  pollinations: { model: 'openai,openai-fast,mistral', base: 'https://text.pollinations.ai/openai', keyless: true },   // bilaash, key la'aan (GPT)
   zen:        { model: 'deepseek-v4-flash-free,qwen3.6-plus-free,mimo-v2.5-free,big-pickle', base: 'https://opencode.ai/zen/v1' },
   gemini:     { model: 'gemini-2.5-flash' },
   groq:       { model: 'llama-3.3-70b-versatile', base: 'https://api.groq.com/openai/v1' },
-  openrouter: { model: 'openrouter/free,qwen/qwen3-coder:free,openai/gpt-oss-120b:free', base: 'https://openrouter.ai/api/v1' },
+  openrouter: { model: 'meta-llama/llama-3.3-70b-instruct:free,nousresearch/hermes-3-llama-3.1-405b:free,openrouter/free,openai/gpt-oss-120b:free', base: 'https://openrouter.ai/api/v1' },
   openai:     { model: 'gpt-4o-mini', base: 'https://api.openai.com/v1' },
   claude:     { model: 'claude-haiku-5-5' },
 };
@@ -55,10 +56,12 @@ function geminiKey() {
 }
 function aiChain(forCustomer) {
   const chain = [];
+  // 1) Pollinations — bilaash, key la'aan (GPT family, af-Soomaali wanaagsan)
+  if (db.settings.pollinations !== false) chain.push(...PROVIDERS.pollinations.model.split(',').map((model) => ({ provider: 'pollinations', key: 'free', base: PROVIDERS.pollinations.base, model })));
   const gk = geminiKey();
   if (gk) chain.push(...GEMINI_MODELS.map((model) => ({ provider: 'gemini', key: gk, model })));
   const cfg = aiCfg();
-  if (cfg.key && !(cfg.provider === 'gemini' && cfg.key === gk)) {
+  if (cfg.key && cfg.provider !== 'pollinations' && !(cfg.provider === 'gemini' && cfg.key === gk)) {
     const models = forCustomer && !db.settings.aiModel && CUSTOMER_MODELS[cfg.provider] ? [...CUSTOMER_MODELS[cfg.provider], ...cfg.models] : cfg.models;
     chain.push(...models.map((model) => ({ ...cfg, model })));
   }
@@ -67,14 +70,14 @@ function aiChain(forCustomer) {
 const cooldown = new Map();   // model → waqtiga la isku dayi karo (429 kadib)
 async function tryModels(fn, forCustomer) {
   const chain = aiChain(forCustomer);
-  if (!chain.length) throw new Error('AI key lama gelin — Dashboard → Habaynta → AI');
+  if (!chain.length) throw new Error('AI lama helin — Dashboard → Habaynta → AI');
   let last;
   const ready = chain.filter((c) => (cooldown.get(c.provider + c.model) || 0) < Date.now());
   for (const c of (ready.length ? ready : chain)) {
     try { return stripThink(await fn(c)); }
     catch (e) {
       last = e; console.error(`AI ${c.provider}/${c.model}:`, e.message);
-      if (/429|quota|rate|exhaust/i.test(e.message)) cooldown.set(c.provider + c.model, Date.now() + 10 * 60 * 1000);
+      if (/429|quota|rate|exhaust|queue/i.test(e.message)) cooldown.set(c.provider + c.model, Date.now() + (c.provider === 'pollinations' ? 20 * 1000 : 10 * 60 * 1000));
     }
   }
   throw last;
@@ -364,7 +367,7 @@ async function replyTo(key) {
   const jid = chat.jid || key;
   try {
     presence(chat, 'composing', jid);
-    let answer = db.settings.useAI ? await askAI(chat) : await customerEngine(chat, key);
+    let answer = await customerEngine(chat, key);
     if (!answer) return;
     // bot-ka waxa la joojiyay inta AI-gu ka fikirayay?
     if (!db.settings.botEnabled || isPaused(chat)) return;
@@ -624,21 +627,61 @@ async function adminEngine(jid, text, sid = 'main') {
         `Taariikh: ${x.date} ${x.time || ''}`, x.staff ? `Qaaday: ${x.staff}` : '', `Deynta haray: ${money(x.due)}`, '', 'Mahadsanid! ✅', '_Powering Mustaxiil._'].filter((l) => l !== '').join('\n'), 'out');
       return sendText(jid, `✅ Rasiidka ${x.receipt} waxaa loo diray ${x.name} (${x.phone}) — ${ses(outSid()).label}.`, sid);
     }
+    if (r.kind === 'unknown') {   // su'aal guud ama mid aan maskaxdu garan → AI (tools MECO + aqoon guud)
+      try {
+        const ans = await tryModels((cfg) => runAgent({ ...cfg, system: ADMIN_PROMPT + `\nWaqtiga hadda: ${nowTxt()} (Africa/Addis_Ababa).`, history: [{ role: 'user', content: text }], tools: MECO_TOOLS, exec: execTool }));
+        if (ans) return sendText(jid, '🤖 ' + ans, sid);
+      } catch (e) { console.error('Admin AI:', e.message); }
+    }
     return sendText(jid, r.text || '…', sid);
   } finally { presence(sid, 'paused', jid); }
 }
-// 🧠 Macaamiisha WhatsApp-ka (key la'aan)
+// 🧠 Macaamiisha WhatsApp-ka: macmiil MECO → xogtiisa (maskaxda + AI); qof kale → xoghaye (AI caadi ah)
+const nowTxt = () => new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
+const ownerName = (sid) => db.settings.secretaryFor || ses(sid).sock?.user?.name || ses(sid).sock?.user?.verifiedName || 'milkiilaha lambarkan';
 async function customerEngine(chat, key) {
-  const pending = [];
-  for (let i = chat.messages.length - 1; i >= 0 && chat.messages[i].role === 'user'; i--) pending.unshift(chat.messages[i].text);
-  const text = pending.join('\n') || (chat.messages[chat.messages.length - 1] || {}).text || '';
-  const r = await mecoCall('ask', { role: 'customer', phone: chat.phone, text });
-  if (r.error) throw new Error('MECO: ' + r.error);
-  if (r.escalate) {
-    chat.needsHuman = true; saveDb(key);
-    toAdmins(`🙋 *${chat.name || chat.phone || 'Macmiil'}* (${ses(chat.sid).label}${chat.phone ? ' · ' + chat.phone : ''})${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_ ${r.text.split('\n')[0]}`).catch(() => {});
+  const pend = [];
+  for (let i = chat.messages.length - 1; i >= 0 && chat.messages[i].role === 'user'; i--) pend.unshift(chat.messages[i].text);
+  const text = pend.join('\n') || (chat.messages[chat.messages.length - 1] || {}).text || '';
+  let r = await mecoCall('ask', { role: 'customer', phone: chat.mecoPhone || chat.phone, text });
+  if (r.notCustomer) {   // lambarka uu qoraalka ku sheegay ma yahay macmiil MECO?
+    const d = text.replace(/\D/g, '');
+    if (d.length >= 9) { const r2 = await mecoCall('ask', { role: 'customer', phone: d, text }); if (!r2.notCustomer && !r2.error) { chat.mecoPhone = d; saveDb(key); r = r2; } }
   }
-  return r.text;
+  if (r.error) throw new Error('MECO: ' + r.error);
+  if (r.notCustomer) return secretaryReply(chat, key, text);
+  chat.isCustomer = true;
+  let answer = r.text, escalate = !!r.escalate;
+  if (r.kind === 'unknown') {     // su'aal aan xogta ahayn → AI (xogta macmiilkan)
+    try {
+      const sys = CUSTOMER_PROMPT + `\nWaqtiga hadda: ${nowTxt()}\nMagaca macmiilka: ${r.customer}\nACCOUNT:\n${JSON.stringify(r.context || {}, null, 1).slice(0, 6000)}`;
+      const a = await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true);
+      escalate = /\[ADMIN\]/i.test(a); answer = a.replace(/\[ADMIN\]/gi, '').trim() || r.text;
+    } catch (e) { console.error('Customer AI:', e.message); }
+  }
+  if (escalate && !chat.test) {
+    chat.needsHuman = true; saveDb(key);
+    toAdmins(`🙋 *${chat.name || chat.phone || 'Macmiil'}* (${ses(chat.sid).label}${chat.phone ? ' · ' + chat.phone : ''})${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_ ${answer.split('\n')[0]}`).catch(() => {});
+  }
+  return answer;
+}
+async function secretaryReply(chat, key, text) {
+  const owner = ownerName(chat.sid), first = !chat.secGreeted;
+  let answer;
+  try {
+    const sys = SECRETARY_PROMPT(owner) + `\nWaqtiga hadda: ${nowTxt()}\nMagaca qofka (WhatsApp): ${chat.name || '—'}${first ? '\nTani waa fariintiisa ugu horreysa — isku sheeg xoghayaha.' : ''}`;
+    answer = await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true);
+  } catch (e) {
+    console.error('Secretary AI:', e.message);
+    answer = first ? `Asc${chat.name ? ' ' + chat.name.split(' ')[0] : ''}! 👋 Waxaan ahay xoghayaha ${owner}. Fariintaada wuu arki doonaa, dhowaan ayuu kuu soo jawaabi doonaa.` : `Fariintaada waa la helay ✅ — ${owner} ayaa dhowaan kuu soo jawaabi doona.`;
+  }
+  chat.secGreeted = true;
+  if (!chat.test && (!chat.secNotifiedAt || Date.now() - chat.secNotifiedAt > 30 * 60 * 1000)) {
+    chat.secNotifiedAt = Date.now();
+    toAdmins(`📩 *${chat.name || chat.phone || 'Qof'}*${chat.phone ? ' (' + chat.phone + ')' : ''} — ${ses(chat.sid).label} · ma aha macmiil MECO\n\n${text}\n\n🤖 _Xoghayaha:_ ${answer.slice(0, 300)}`).catch(() => {});
+  }
+  saveDb(key);
+  return answer;
 }
 const adminHistory = new Map();
 function quotedText(m) {
@@ -658,7 +701,7 @@ async function handleAdmin(jid, text, m, sid = 'main') {
     return sendText(jid, r.error ? '⚠️ Lama dirin: ' + r.error : `✅ Waa loo diray *${r.customer}* (app-ka · ${r.ticketNo})`, sid);
   }
   currentAdminJid = jid; currentAdminSid = sid;
-  if (!db.settings.useAI) return adminEngine(jid, text, sid);
+  return adminEngine(jid, text, sid);
   const h = adminHistory.get(sid + jid) || [];
   if (/^\/?(reset|cusub|clear)$/i.test(text.trim())) { adminHistory.delete(sid + jid); return sendText(jid, '🔄 Sheekada waa la tirtiray.', sid); }
   h.push({ role: 'user', content: text });
@@ -785,7 +828,7 @@ app.get('/api/status', (req, res) => {
     connected: wa.connected, qr: wa.qr, me: wa.me, lastError: wa.lastError,
     sessions: Object.values(SES).map((x) => ({ id: x.id, label: x.label, connected: x.wa.connected, qr: x.wa.qr, me: x.wa.me, lastError: x.wa.lastError, pairCode: x.wa.pairCode || null })),
     outFrom: ses(outSid()).label,
-    botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: !db.settings.useAI ? '🧠 Maskaxda af-Soomaaliga (key la\'aan)' : (aiChain().slice(0, 1).map((c) => `${c.provider} · ${c.model}`)[0] || '— (key ma jiro)'),
+    botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: '🧠 Maskaxda MECO + ' + (aiChain().slice(0, 1).map((c) => `${c.provider} · ${c.model}`)[0] || 'AI ma jiro'),
     sheet: { configured: !!SHEET_URL, ...knowledge, text: undefined, chars: knowledge.text.length },
     stats: {
       chats: chats.length,
@@ -866,6 +909,7 @@ app.post('/api/settings', (req, res) => {
     ...(s.customerReceipts !== undefined && { customerReceipts: !!s.customerReceipts }),
     ...(s.appAutoReply !== undefined && { appAutoReply: !!s.appAutoReply }),
     ...(s.useAI !== undefined && { useAI: !!s.useAI }),
+    ...(s.secretaryFor !== undefined && { secretaryFor: String(s.secretaryFor).trim() }),
     ...(s.mecoUrl !== undefined && { mecoUrl: String(s.mecoUrl).trim() }),
     ...(s.aiProvider && PROVIDERS[s.aiProvider] && { aiProvider: s.aiProvider }),
     ...(s.aiModel !== undefined && { aiModel: String(s.aiModel).trim() }),
@@ -888,10 +932,9 @@ app.get('/api/knowledge', (req, res) => res.json({ ...knowledge, preview: knowle
 // Tijaabi AI-ga adigoon WhatsApp isticmaalin
 app.post('/api/test', async (req, res) => {
   try {
-    if (!db.settings.useAI) {
-      const last = [...(req.body.messages || [])].reverse().find((m) => m.role === 'user');
-      const r = await mecoCall('ask', { role: req.body.admin ? 'admin' : 'customer', phone: req.body.phone || '', text: last ? last.text : '' });
-      return res.json({ answer: r.error ? '⚠️ ' + r.error : r.text });
+    {
+      const fake = { test: true, sid: 'main', name: 'Tijaabo', phone: req.body.phone || '', messages: (req.body.messages || []).map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', text: m.text })) };
+      return res.json({ answer: await customerEngine(fake, null) });
     }
     const fake = { name: 'Tijaabo', messages: (req.body.messages || []).map((m) => ({ role: m.role, text: m.text })) };
     res.json({ answer: await askAI(fake) });

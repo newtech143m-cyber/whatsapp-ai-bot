@@ -126,7 +126,9 @@
       <div class="card" style="grid-column:1/-1;border-color:#7c3aed">
         <h3>🤖 AI-ga (Provider & Key)</h3>
         <div style="font-size:13px;color:var(--m)">OpenCode Zen: key ka hel <b>opencode.ai/zen</b>. Model-yada comma ku kala saar — haddii midka hore xaddid gaaro, kan xiga ayaa si toos ah loo isticmaalayaa.</div>
-        <label style="display:flex;align-items:center;gap:8px;color:var(--t);font-size:14px;margin-top:6px"><input type="checkbox" id="sUseAI" style="width:auto"> Isticmaal AI dibadeed (key) — haddii aan la calaamadin, <b>maskaxda af-Soomaaliga ee MECO</b> ayaa jawaabta (bilaash, key la'aan)</label>
+        <div style="font-size:13px;color:var(--m);margin-top:6px">✅ <b>Pollinations (GPT)</b> — bilaash, key la'aan — ayaa had iyo jeer shaqeynaya. Key-yada hoose waa ikhtiyaari (kayd).</div>
+        <label>Xoghaye: magaca qofka (dadka aan macmiilka MECO ahayn waxaa loo sheegayaa "Waxaan ahay xoghayaha …"). Madhan = magaca WhatsApp-ka</label><input id="sSec" placeholder="tusaale: Duale">
+        <input type="checkbox" id="sUseAI" style="display:none">
         <label>⭐ Google Gemini key — af-Soomaali ugu fiican (bilaash: aistudio.google.com/apikey) <span id="gHint" style="color:var(--g)"></span></label><input id="sGem" type="password" placeholder="AIza… (madhan = ha beddelin)">
         <div style="font-size:12px;color:var(--m);margin-top:6px">Gemini ayaa marka hore la isticmaalayaa (4 model, xaddid kasta gooni); haddii ay dhammaadaan → provider-ka hoose.</div>
         <label>Provider-ka labaad (kayd)</label><select id="sProv" style="width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);background:var(--p2);color:var(--t)"></select>
@@ -289,7 +291,7 @@ async function loadSettings() {
   $('#sPrompt').value = s.systemPrompt; $('#sPause').value = s.pauseMinutes;
   $('#sBatch').value = s.batchSeconds; $('#sAge').value = s.maxAgeMinutes; $('#sIgnore').value = s.ignoreNumbers;
   $('#sProv').innerHTML = (s.providers || []).map(p => `<option ${p === s.aiProvider ? 'selected' : ''}>${p}</option>`).join('');
-  $('#sUseAI').checked = !!s.useAI;
+  $('#sUseAI').checked = !!s.useAI; $('#sSec').value = s.secretaryFor || '';
   $('#gHint').textContent = s.geminiSet ? '✓ ' + s.geminiHint : '⚠️ lama gelin'; $('#sGem').value = '';
   $('#keyHint').textContent = s.aiKeySet ? '✓ la geliyay ' + s.aiKeyHint : '⚠️ lama gelin';
   $('#sModel').value = s.aiModel || ''; $('#sModel').placeholder = s.aiModelDefault || ''; $('#sKey').value = '';
@@ -332,7 +334,7 @@ function testWhatsApp() {
 }
 $('#saveAi').onclick = async () => {
   try {
-    await api('/api/settings', { method: 'POST', body: { useAI: $('#sUseAI').checked, aiProvider: $('#sProv').value, aiModel: $('#sModel').value, ...($('#sKey').value ? { aiKey: $('#sKey').value } : {}), ...($('#sGem').value ? { geminiKey: $('#sGem').value } : {}) } });
+    await api('/api/settings', { method: 'POST', body: { secretaryFor: $('#sSec').value, aiProvider: $('#sProv').value, aiModel: $('#sModel').value, ...($('#sKey').value ? { aiKey: $('#sKey').value } : {}), ...($('#sGem').value ? { geminiKey: $('#sGem').value } : {}) } });
     await loadSettings(); loadStatus(); toast('✅ AI-ga waa la kaydiyay');
   } catch (e) { toast('❌ ' + e.message); }
 };
