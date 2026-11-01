@@ -28,7 +28,7 @@ const PROVIDERS = {
   zen:        { model: 'deepseek-v4-flash-free,qwen3.6-plus-free,mimo-v2.5-free,big-pickle', base: 'https://opencode.ai/zen/v1' },
   gemini:     { model: 'gemini-2.5-flash' },
   groq:       { model: 'llama-3.3-70b-versatile', base: 'https://api.groq.com/openai/v1' },
-  openrouter: { model: 'meta-llama/llama-3.3-70b-instruct:free', base: 'https://openrouter.ai/api/v1' },
+  openrouter: { model: 'openrouter/free,qwen/qwen3-coder:free,openai/gpt-oss-120b:free', base: 'https://openrouter.ai/api/v1' },
   openai:     { model: 'gpt-4o-mini', base: 'https://api.openai.com/v1' },
   claude:     { model: 'claude-haiku-5-5' },
 };
