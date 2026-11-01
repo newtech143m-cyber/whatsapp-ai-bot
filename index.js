@@ -393,6 +393,8 @@ const money = (v) => Number(v || 0).toLocaleString('en-US') + ' Br';
 
 function buildNotifications(b) {
   const admins = String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean);
+  // Lambar la'aan → lambarka bot-ka laftiisa ("Message yourself")
+  if (!admins.length && sock?.user?.id) admins.push(sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net');
   if (b.to) admins.splice(0, admins.length, ...String(b.to).split(',').map(toJid).filter(Boolean));
   const out = [];
   const when = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
@@ -406,6 +408,8 @@ function buildNotifications(b) {
       b.customerId ? `🆔 ID: ${b.customerId}` : '',
       `💵 Lacag: *${money(b.amount)}*`,
       `💳 Hab: ${b.method || '-'}`,
+      b.receipt ? `🧾 Rasiid: ${b.receipt}` : '',
+      b.due !== undefined && b.due !== '' ? `📉 Deynta haray: ${money(b.due)}` : '',
       b.plan ? `📅 Nooca: ${b.plan}` : '',
       b.staff ? `🧑‍💼 Shaqaale: ${b.staff}` : '',
       b.note ? `📝 ${b.note}` : '',
@@ -419,9 +423,11 @@ function buildNotifications(b) {
       '⚡ *MECO POWER SUPPLY*',
       `Mahadsanid ${b.customer || ''}! ✅`,
       `Lacagtaada *${money(b.amount)}* (${b.method || ''}) waa la helay.`,
+      b.receipt ? `🧾 Rasiid: ${b.receipt}` : '',
+      b.due !== undefined && b.due !== '' ? `📉 Deynta haray: ${money(b.due)}` : '',
       `🕒 ${when}`,
       '_Powering Mustaxiil._',
-    ].join('\n') });
+    ].filter(Boolean).join('\n') });
   }
   return out;
 }
@@ -454,7 +460,8 @@ app.get('/health', (req, res) => res.json({ ok: true, connected: wa.connected, u
 app.post('/api/notify', async (req, res) => {
   const b = req.body || {};
   if (!b.secret || b.secret !== db.settings.notifySecret) return res.status(401).json({ ok: false, error: 'Secret khaldan' });
-  const items = buildNotifications(b);
+  const list = Array.isArray(b.items) ? b.items.slice(0, 100) : [b];
+  const items = list.flatMap((x) => buildNotifications(x || {}));
   if (!items.length) return res.status(400).json({ ok: false, error: 'Lambar ama fariin lama helin (eeg Habaynta → MECO)' });
   for (const it of items) notifyQueue.push(it);
   if (notifyQueue.length > 500) notifyQueue.splice(0, notifyQueue.length - 500);
