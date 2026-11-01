@@ -140,6 +140,7 @@
         <h3>⚡ MECO POWER SUPPLY — Ogeysiisyada lacag-bixinta</h3>
         <div style="font-size:13px;color:var(--m)">Mar kasta oo lacag laga qaado macmiil MECO app-ka, WhatsApp ayaa loogu sheegayaa lambarada hoose.</div>
         <label>Lambarada ogeysiiska helaya (comma u kala saar, tusaale 0911223344, 0922334455)</label><input id="sNotify">
+        <label>📄 PDF-ka lacag-qaadista (xisaab-xirka kadib, hal mar) — kaliya lambaradan</label><input id="sPdf">
         <label style="display:flex;align-items:center;gap:8px;color:var(--t);font-size:14px;margin-top:14px"><input type="checkbox" id="sReceipt" style="width:auto"> Macmiilka u dir rasiid WhatsApp ah (haddii lambarkiisu jiro)</label>
         <label style="display:flex;align-items:center;gap:8px;color:var(--t);font-size:14px;margin-top:10px"><input type="checkbox" id="sAuto" style="width:auto"> 🤖 AI-gu ha ka jawaabo fariimaha macaamiisha app-ka (adigana WhatsApp ayay kuugu imanayaan)</label>
         <label>MECO Apps Script URL (/exec) — AI agent-ku halkan ayuu xogta ka akhriyaa</label><input id="sMeco">
@@ -295,7 +296,7 @@ async function loadSettings() {
   $('#gHint').textContent = s.geminiSet ? '✓ ' + s.geminiHint : '⚠️ lama gelin'; $('#sGem').value = '';
   $('#keyHint').textContent = s.aiKeySet ? '✓ la geliyay ' + s.aiKeyHint : '⚠️ lama gelin';
   $('#sModel').value = s.aiModel || ''; $('#sModel').placeholder = s.aiModelDefault || ''; $('#sKey').value = '';
-  $('#sNotify').value = s.notifyNumbers || ''; $('#sReceipt').checked = !!s.customerReceipts; $('#sMeco').value = s.mecoUrl || ''; $('#sAuto').checked = s.appAutoReply !== false;
+  $('#sNotify').value = s.notifyNumbers || ''; $('#sPdf').value = s.pdfNumbers || ''; $('#sReceipt').checked = !!s.customerReceipts; $('#sMeco').value = s.mecoUrl || ''; $('#sAuto').checked = s.appAutoReply !== false;
   $('#gasSnippet').textContent = gasCode(location.origin, s.notifySecret);
 }
 function gasCode(url, secret) {
@@ -340,7 +341,7 @@ $('#saveAi').onclick = async () => {
 };
 $('#sProv').onchange = () => { $('#sModel').value = ''; };
 $('#saveNotify').onclick = async () => {
-  await api('/api/settings', { method: 'POST', body: { notifyNumbers: $('#sNotify').value, customerReceipts: $('#sReceipt').checked, mecoUrl: $('#sMeco').value, appAutoReply: $('#sAuto').checked } });
+  await api('/api/settings', { method: 'POST', body: { notifyNumbers: $('#sNotify').value, pdfNumbers: $('#sPdf').value, customerReceipts: $('#sReceipt').checked, mecoUrl: $('#sMeco').value, appAutoReply: $('#sAuto').checked } });
   toast('✅ Waa la kaydiyay');
 };
 $('#testNotify').onclick = async () => {

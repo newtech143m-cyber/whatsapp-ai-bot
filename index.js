@@ -148,6 +148,8 @@ let db = {
     notifySecret: '',      // MECO: sirta /api/notify (si toos ah ayaa loo sameeyaa)
     customerReceipts: false, // MECO: rasiid WhatsApp ah u dir macmiilka
     appAutoReply: true,    // MECO: AI-gu ha ka jawaabo fariimaha app-ka
+    pdfNumbers: '0916928151, 0915191946',   // MECO: PDF-ka lacag-qaadista (xisaab-xirka kadib) — kaliya lambaradan
+    perPaymentNotify: false,                // MECO: lacag kasta fariin gooni ah? (maya — PDF hal mar)
     secretaryFor: 'Duale', secretaryFor2: 'Abdinur',
     useAI: false,          // false = maskaxda af-Soomaaliga ee MECO (key la'aan); true = AI dibadeed (Gemini/OpenRouter)
     mecoUrl: 'https://script.google.com/macros/s/AKfycbzOAYE9TIE8-xCGYLQEkiJljVAz-pHl5rIaNaB66fEO_lobtmf9R5N-5Ju7axc0H9A_/exec',
@@ -842,7 +844,12 @@ const toJid = (num) => {
 const money = (v) => Number(v || 0).toLocaleString('en-US') + ' Br';
 
 function buildNotifications(b) {
-  const admins = adminJids();
+  // Lacag kasta fariin gooni ah lama diro (PDF hal mar ayaa xisaab-xirka kadib la dirayaa); warbixinta qoraalka ah sidoo kale PDF ayay noqotay
+  const txt = String(b.text || '');
+  if (/XISAAB-XIR/i.test(txt) || b.type === 'pdf_report') { schedulePaymentsPdf(b); return []; }
+  if (/^📊 Warbixinta/.test(txt)) return [];
+  const paymentSkip = b.type === 'payment' && !db.settings.perPaymentNotify;
+  const admins = paymentSkip ? [] : adminJids();
   if (b.to) admins.splice(0, admins.length, ...String(b.to).split(',').map(toJid).filter(Boolean));
   const out = [];
   const when = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
@@ -880,6 +887,26 @@ function buildNotifications(b) {
   return out;
 }
 
+// 📄 PDF-ka lacag-qaadista (dhammaan macaamiishii caawa laga qaaday) → kaliya pdfNumbers (Duale + 0915191946)
+let pdfTimer = null;
+function schedulePaymentsPdf(b) {
+  clearTimeout(pdfTimer);   // xisaab-xirro badan oo isku xiga → hal PDF (2 daqiiqo kadib)
+  pdfTimer = setTimeout(() => sendPaymentsPdf(b).catch((e) => console.error('PDF error:', e.message)), 2 * 60 * 1000);
+}
+async function sendPaymentsPdf(b = {}) {
+  const day = b.from || new Date().toLocaleDateString('en-CA', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa' });
+  const d = await mecoCall('pdf', { kind: 'payments', from: day, to: b.to || day });
+  if (d.error || !d.b64) throw new Error(d.error || 'PDF lama helin');
+  const to = String(db.settings.pdfNumbers || '').split(',').map(toJid).filter(Boolean);
+  for (const jid of to) {
+    const sid = pickSid(jid), x = ses(sid);
+    if (!x.wa.connected) continue;
+    const id = newId(); ourIds.add(id);
+    await x.sock.sendMessage(jid, { document: Buffer.from(d.b64, 'base64'), mimetype: 'application/pdf', fileName: d.name || `Lacag-bixin_${day}.pdf`,
+      caption: `⚡ MECO POWER SUPPLY\n🧾 Lacag-qaadista ${day.split('-').reverse().join('/')} — dhammaan macaamiisha` }, { messageId: id });
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
 let notifyBusy = false;
 async function flushNotifyQueue() {
   if (notifyBusy || !ses(outSid()).wa.connected) return;
@@ -927,7 +954,7 @@ app.post('/api/notify', async (req, res) => {
   const appMsgs = list.filter((x) => x.type === 'app_message');
   appMsgs.forEach((x) => handleAppMessage(x).catch((e) => console.error('App message error:', e.message)));
   const items = list.filter((x) => x.type !== 'app_message').flatMap((x) => buildNotifications(x));
-  if (!items.length && !appMsgs.length) return res.status(400).json({ ok: false, error: 'Lambar ama fariin lama helin (eeg Habaynta → MECO)' });
+  if (!items.length && !appMsgs.length && !list.length) return res.status(400).json({ ok: false, error: 'Lambar ama fariin lama helin (eeg Habaynta → MECO)' });
   for (const it of items) notifyQueue.push(it);
   if (notifyQueue.length > 500) notifyQueue.splice(0, notifyQueue.length - 500);
   await flushNotifyQueue();
@@ -1031,6 +1058,7 @@ app.post('/api/settings', (req, res) => {
     ...(s.useAI !== undefined && { useAI: !!s.useAI }),
     ...(s.secretaryFor !== undefined && { secretaryFor: String(s.secretaryFor).trim() }),
     ...(s.secretaryFor2 !== undefined && { secretaryFor2: String(s.secretaryFor2).trim() }),
+    ...(s.pdfNumbers !== undefined && { pdfNumbers: String(s.pdfNumbers) }),
     ...(s.mecoUrl !== undefined && { mecoUrl: String(s.mecoUrl).trim() }),
     ...(s.aiProvider && PROVIDERS[s.aiProvider] && { aiProvider: s.aiProvider }),
     ...(s.aiModel !== undefined && { aiModel: String(s.aiModel).trim() }),
