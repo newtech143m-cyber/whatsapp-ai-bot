@@ -85,7 +85,7 @@ function aiChain(forCustomer) {
   if (pref.length) { const l = pref.map((x) => { const i = x.indexOf('/'); return mk(x.slice(0, i), x.slice(i + 1)); }).filter((c) => c && c.key); if (l.length) return l; }
   const chain = [mk('pollinations', 'openai')];
   const gk0 = geminiKey(); if (gk0) chain.push(...GEMINI_MODELS.map((model) => ({ provider: 'gemini', key: gk0, model })));
-  const fr = mk('openrouter', 'openrouter/free'); if (fr && fr.key) chain.push(fr);
+  // openrouter/free: tayo hoose (Ingiriis/fikir) → lama isticmaalo; haddii Pollinations mashquul yahay, jawaab kayd ah ayaa la bixinayaa
   if (chain.length) return chain;
   // 1) Pollinations — bilaash, key la'aan (GPT family, af-Soomaali wanaagsan)
   if (db.settings.pollinations !== false) chain.push(...PROVIDERS.pollinations.model.split(',').map((model) => ({ provider: 'pollinations', key: 'free', base: PROVIDERS.pollinations.base, model })));
