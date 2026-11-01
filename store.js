@@ -16,7 +16,7 @@ export const supabase = createClient(url, key, { auth: { persistSession: false }
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 
 // ---------------- WhatsApp auth state ----------------
-export async function useSupabaseAuthState() {
+export async function useSupabaseAuthState(prefix = '') {
   const read = async (keys) => {
     const out = {};
     for (const part of chunk(keys, 200)) {
@@ -39,17 +39,17 @@ export async function useSupabaseAuthState() {
     }
   };
 
-  const creds = (await read(['creds']))['creds'] || initAuthCreds();
+  const creds = (await read([prefix + 'creds']))[prefix + 'creds'] || initAuthCreds();
 
   return {
     state: {
       creds,
       keys: {
         get: async (type, ids) => {
-          const found = await read(ids.map((id) => `${type}-${id}`));
+          const found = await read(ids.map((id) => `${prefix}${type}-${id}`));
           const data = {};
           for (const id of ids) {
-            let v = found[`${type}-${id}`] ?? null;
+            let v = found[`${prefix}${type}-${id}`] ?? null;
             if (type === 'app-state-sync-key' && v) v = proto.Message.AppStateSyncKeyData.fromObject(v);
             data[id] = v;
           }
@@ -62,7 +62,7 @@ export async function useSupabaseAuthState() {
           for (const cat in data) {
             for (const id in data[cat]) {
               const v = data[cat][id];
-              const k = `${cat}-${id}`;
+              const k = `${prefix}${cat}-${id}`;
               if (v) up.push({ key: k, value: JSON.stringify(v, BufferJSON.replacer), updated_at: now });
               else del.push(k);
             }
@@ -72,12 +72,14 @@ export async function useSupabaseAuthState() {
         },
       },
     },
-    saveCreds: () => write([{ key: 'creds', value: JSON.stringify(creds, BufferJSON.replacer), updated_at: new Date().toISOString() }]),
+    saveCreds: () => write([{ key: prefix + 'creds', value: JSON.stringify(creds, BufferJSON.replacer), updated_at: new Date().toISOString() }]),
   };
 }
 
-export async function clearAuth() {
-  const { error } = await supabase.from('wa_auth').delete().neq('key', '');
+export async function clearAuth(prefix = '') {
+  // main (prefix '') = furayaasha aan horgale lahayn; s2 = 's2:%'
+  const q = supabase.from('wa_auth').delete();
+  const { error } = prefix ? await q.like('key', prefix + '%') : await q.not('key', 'like', 's2:%');
   if (error) console.error('clearAuth:', error.message);
 }
 
@@ -108,7 +110,7 @@ export async function loadChats() {
 }
 export async function saveChats(list) {
   if (!list.length) return;
-  const rows = list.map((c) => ({ jid: c.jid, data: c, last_ts: c.lastTs || 0, updated_at: new Date().toISOString() }));
+  const rows = list.map((c) => ({ jid: c.key || c.jid, data: c, last_ts: c.lastTs || 0, updated_at: new Date().toISOString() }));
   for (const part of chunk(rows, 100)) {
     const { error } = await supabase.from('wa_chats').upsert(part, { onConflict: 'jid' });
     if (error) throw new Error('saveChats: ' + error.message);

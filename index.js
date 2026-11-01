@@ -149,12 +149,15 @@ async function flush() {
 }
 setInterval(flush, 2000);
 
-function getChat(jid, name, phone) {
-  if (!db.chats[jid]) {
-    db.chats[jid] = { jid, name: name || '', phone: phone || '', messages: [], pausedUntil: 0,
+const chatKey = (sid, jid) => (!sid || sid === 'main' ? jid : sid + '|' + jid);
+function getChat(jid, name, phone, sid = 'main') {
+  const key = chatKey(sid, jid);
+  if (!db.chats[key]) {
+    db.chats[key] = { key, sid, jid, name: name || '', phone: phone || '', messages: [], pausedUntil: 0,
       manualPause: false, needsHuman: false, unread: 0, lastTs: Date.now() };
   }
-  const c = db.chats[jid];
+  const c = db.chats[key];
+  if (!c.key) c.key = key;
   if (name && !c.name) c.name = name;
   if (phone && !c.phone) c.phone = phone;
   return c;
@@ -163,7 +166,7 @@ function addMessage(chat, role, text) {
   chat.messages.push({ role, text, ts: Date.now() });
   if (chat.messages.length > 300) chat.messages = chat.messages.slice(-300);
   chat.lastTs = Date.now();
-  saveDb(chat.jid);
+  saveDb(chat.key || chat.jid);
 }
 function isPaused(chat) {
   return chat.manualPause || chat.pausedUntil > Date.now();
@@ -281,21 +284,31 @@ async function callAI({ provider, model: AI_MODEL, key: AI_KEY, base }, system, 
 // -------------------------------------------------------------
 //  WhatsApp (Baileys)
 // -------------------------------------------------------------
-let sock = null;
-let wa = { connected: false, qr: null, me: null, lastError: null };
+// Laba WhatsApp hal server: main = WhatsApp-kaaga (1), s2 = WhatsApp 2 (rasiidyada + ogeysiisyada + macaamiisha)
+const SES = {
+  main: { id: 'main', label: 'WhatsApp 1', sock: null, wa: { connected: false, qr: null, me: null, lastError: null } },
+  s2:   { id: 's2', label: 'WhatsApp 2', sock: null, wa: { connected: false, qr: null, me: null, lastError: null } },
+};
+let sock = null;                 // main (compat)
+const wa = SES.main.wa;          // main (compat)
+const ses = (sid) => SES[sid] || SES.main;
+const outSid = () => (SES.s2.wa.connected ? 's2' : 'main');   // rasiidyada/ogeysiisyada: WhatsApp 2 haddii uu xiran yahay
+const sesNumbers = () => Object.values(SES).flatMap((x) => [x.sock?.user?.id, x.sock?.user?.lid]).filter(Boolean).map((j) => String(j).split('@')[0].split(':')[0]);
 const ourIds = new Set();          // fariimaha aan annagu dirnay (si looga sooco kuwa telefoonka)
 const pending = new Map();         // jid -> timer (batching)
 const busy = new Set();
 
 const newId = () => '3EB0' + crypto.randomBytes(9).toString('hex').toUpperCase();
 
-async function sendText(jid, text) {
-  if (!sock || !wa.connected) throw new Error('WhatsApp ma xirna');
+async function sendText(jid, text, sid = 'main') {
+  const x = ses(sid === 'out' ? outSid() : sid);
+  if (!x.sock || !x.wa.connected) throw new Error(x.label + ' ma xirna');
   const id = newId();
   ourIds.add(id);
   setTimeout(() => ourIds.delete(id), 10 * 60 * 1000);
-  await sock.sendMessage(jid, { text }, { messageId: id });
+  await x.sock.sendMessage(jid, { text }, { messageId: id });
 }
+const presence = (chatOrSid, state, jid) => ses(typeof chatOrSid === 'string' ? chatOrSid : chatOrSid?.sid).sock?.sendPresenceUpdate(state, jid).catch(() => {});
 
 function extractText(m) {
   const msg = m.message || {};
@@ -334,7 +347,7 @@ async function aiFailed(chat, jid, e) {
   try {
     if (!chat.fallbackAt || Date.now() - chat.fallbackAt > 30 * 60 * 1000) {
       const t = 'Waad salaaman tahay! Fariintaada waa la helay ✅. Dhowaan ayaa laguu soo jawaabi doonaa.';
-      await sendText(jid, t); addMessage(chat, 'assistant', t); chat.fallbackAt = Date.now(); saveDb(jid);
+      await sendText(chat.jid, t, chat.sid); addMessage(chat, 'assistant', t); chat.fallbackAt = Date.now(); saveDb(chat.key || chat.jid);
     }
     if (Date.now() - lastAiAlert > 10 * 60 * 1000) {
       lastAiAlert = Date.now();
@@ -343,14 +356,15 @@ async function aiFailed(chat, jid, e) {
   } catch { /* ignore */ }
 }
 
-async function replyTo(jid) {
-  const chat = db.chats[jid];
+async function replyTo(key) {
+  const chat = db.chats[key];
   if (!chat || !db.settings.botEnabled || isPaused(chat)) return;
-  if (busy.has(jid)) return scheduleReply(jid);
-  busy.add(jid);
+  if (busy.has(key)) return scheduleReply(key);
+  busy.add(key);
+  const jid = chat.jid || key;
   try {
-    await sock.sendPresenceUpdate('composing', jid).catch(() => {});
-    let answer = db.settings.useAI ? await askAI(chat) : await customerEngine(chat, jid);
+    presence(chat, 'composing', jid);
+    let answer = db.settings.useAI ? await askAI(chat) : await customerEngine(chat, key);
     if (!answer) return;
     // bot-ka waxa la joojiyay inta AI-gu ka fikirayay?
     if (!db.settings.botEnabled || isPaused(chat)) return;
@@ -360,54 +374,57 @@ async function replyTo(jid) {
       answer = answer.replace(/\[ADMIN\]/g, '').trim();
     }
     if (answer) {
-      await sendText(jid, answer);
+      await sendText(jid, answer, chat.sid);
       addMessage(chat, 'assistant', answer);
       logToSheet({ phone: chat.phone, name: chat.name, direction: 'BOT', text: answer });
     }
     if (escalate) {
       chat.needsHuman = true;
       chat.manualPause = true;
-      saveDb(jid);
+      saveDb(key);
       console.log(`🙋 ${chat.name || chat.phone} wuxuu u baahan yahay adiga (bot-ka waa la hakiyay)`);
     }
   } catch (e) {
     console.error('Reply error:', e.message);
     aiFailed(chat, jid, e);
   } finally {
-    busy.delete(jid);
-    sock?.sendPresenceUpdate('paused', jid).catch(() => {});
+    busy.delete(key);
+    presence(chat, 'paused', jid);
   }
 }
 
-async function handleMessage(m, type) {
+async function handleMessage(m, type, sid = 'main') {
   const jid = m.key.remoteJid;
   if (skipJid(jid)) return;
+  if (ourIds.has(m.key.id)) return;              // fariin bot-ku diray (WhatsApp 1 ama 2)
   const text = extractText(m);
   if (!text) return;
   const phone = phoneOf(m.key);
 
-  // MECO AI agent: "Message yourself" chat-ka ama lambarada maamulaha
-  if (isAdminMsg(m, phone)) {
-    if (ourIds.has(m.key.id) || type !== 'notify') return;
-    return handleAdmin(jid, text, m);
+  // MECO AI agent: "Message yourself", lambarada maamulaha, ama labada WhatsApp ee bot-ka midba midka kale
+  if (isAdminMsg(m, phone, sid)) {
+    if (type !== 'notify') return;
+    return handleAdmin(jid, text, m, sid);
   }
+  // fariin aad adigu (telefoonka) u dirtay WhatsApp-ka kale ee bot-ka → iska dhaaf
+  if (m.key.fromMe && (sesNumbers().includes(userPart(jid)) || (phone && sesNumbers().includes(phone)))) return;
   const tsMs = Number(m.messageTimestamp || 0) * 1000 || Date.now();
 
   if (m.key.fromMe) {
     if (ourIds.has(m.key.id)) return;           // bot-ka ama dashboard-ka ayaa diray
     if (type !== 'notify') return;
     // Adiga ayaa telefoonka ka jawaabay → bot-ku ha iska aamuso muddo
-    const chat = getChat(jid, '', phone);
+    const chat = getChat(jid, '', phone, sid);
     addMessage(chat, 'owner', text);
     chat.pausedUntil = Date.now() + db.settings.pauseMinutes * 60 * 1000;
     chat.needsHuman = false;
-    saveDb(jid);
+    saveDb(chat.key);
     logToSheet({ phone: chat.phone, name: chat.name, direction: 'ADIGA', text });
     return;
   }
 
   if (type !== 'notify') return;
-  const chat = getChat(jid, m.pushName, phone);
+  const chat = getChat(jid, m.pushName, phone, sid);
   if (m.pushName) chat.name = m.pushName;
   addMessage(chat, 'user', text);
   chat.unread = (chat.unread || 0) + 1;
@@ -416,14 +433,15 @@ async function handleMessage(m, type) {
   const ignored = db.settings.ignoreNumbers.split(',').map((s) => s.replace(/\D/g, '')).filter(Boolean);
   if (ignored.includes(chat.phone)) return;
   if (Date.now() - tsMs > db.settings.maxAgeMinutes * 60 * 1000) return;
-  scheduleReply(jid);
+  scheduleReply(chat.key);
 }
 
-async function startWhatsApp() {
-  const { state, saveCreds } = await store.useSupabaseAuthState();
+async function startWhatsApp(sid = 'main') {
+  const S = ses(sid), prefix = sid === 'main' ? '' : sid + ':';
+  const { state, saveCreds } = await store.useSupabaseAuthState(prefix);
   let version;
   try { ({ version } = await fetchLatestBaileysVersion()); } catch { /* default */ }
-  sock = makeWASocket({
+  const sock = makeWASocket({
     ...(version ? { version } : {}),
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     logger,
@@ -431,49 +449,57 @@ async function startWhatsApp() {
     markOnlineOnConnect: false,
     syncFullHistory: false,
   });
+  S.sock = sock;
+  setMainSock();
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (u) => {
+    if (S.sock !== sock) return;                  // socket hore
     const { connection, lastDisconnect, qr } = u;
     if (qr) {
-      wa.qr = await QRCode.toDataURL(qr);
-      console.log(`📱 QR code diyaar — fur http://localhost:${PORT} oo scan garee`);
+      S.wa.qr = await QRCode.toDataURL(qr);
+      console.log(`📱 ${S.label}: QR code diyaar`);
     }
     if (connection === 'open') {
-      wa = { connected: true, qr: null, me: sock.user, lastError: null };
+      Object.assign(S.wa, { connected: true, qr: null, me: sock.user, lastError: null, pairCode: null });
       setTimeout(flushNotifyQueue, 2000);
-      console.log(`✅ WhatsApp waa ku xirmay: ${sock.user?.id}`);
+      console.log(`✅ ${S.label} waa ku xirmay: ${sock.user?.id}`);
     }
     if (connection === 'close') {
-      wa.connected = false;
+      S.wa.connected = false;
       const code = lastDisconnect?.error?.output?.statusCode;
-      wa.lastError = lastDisconnect?.error?.message || String(code);
+      S.wa.lastError = lastDisconnect?.error?.message || String(code);
       if (code === DisconnectReason.loggedOut) {
-        console.log('🚪 WhatsApp waa laga baxay — QR cusub ayaa la sameynayaa');
-        await store.clearAuth();
+        console.log(`🚪 ${S.label}: waa laga baxay — QR cusub`);
+        S.wa.me = null;
+        await store.clearAuth(prefix);
       } else {
-        console.log('🔄 Xiriirka ayaa go\'ay, dib ayaa loo xirayaa...', wa.lastError);
+        console.log(`🔄 ${S.label}: xiriirka ayaa go'ay, dib ayaa loo xirayaa...`, S.wa.lastError);
       }
-      setTimeout(startWhatsApp, 3000);
+      // WhatsApp 2 oo aan weli la xirin: si tartiib ah dib u bilow (QR cusub)
+      setTimeout(() => startWhatsApp(sid), sid !== 'main' && !S.wa.me ? 15000 : 3000);
     }
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     for (const m of messages) {
-      try { await handleMessage(m, type); } catch (e) { console.error('Message error:', e.message); }
+      try { await handleMessage(m, type, sid); } catch (e) { console.error(`Message error (${sid}):`, e.message); }
     }
   });
 }
+function setMainSock() { sock = SES.main.sock; }
 
 // -------------------------------------------------------------
 //  MECO AI agent (maamulaha)
 // -------------------------------------------------------------
 const userPart = (j) => String(j || '').split('@')[0].split(':')[0];
-function isAdminMsg(m, phone) {
-  const me = [sock?.user?.id, sock?.user?.lid].filter(Boolean).map(userPart);
+function isAdminMsg(m, phone, sid = 'main') {
+  const x = ses(sid).sock;
+  const me = [x?.user?.id, x?.user?.lid].filter(Boolean).map(userPart);
   if (m.key.fromMe) return me.includes(userPart(m.key.remoteJid)) || (m.key.remoteJidAlt && me.includes(userPart(m.key.remoteJidAlt)));
-  const admins = String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean).map(userPart);
-  return !!phone && admins.includes(phone);
+  // maamulaha: lambarada Habaynta + labada lambar ee bot-ka (WhatsApp 1 ↔ 2)
+  const admins = [...String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean).map(userPart), ...sesNumbers()];
+  return (!!phone && admins.includes(phone)) || admins.includes(userPart(m.key.remoteJid));
 }
 
 async function mecoCall(tool, args) {
@@ -512,8 +538,8 @@ async function execTool(name, args) {
     if (d.error || d.ambiguous) return d;
     const jid = toJid(d.customer.Phone);
     if (!jid) return { error: `${d.customer.Name} lambar telefoon kuma diiwaangashana MECO` };
-    if (!wa.connected) return { error: 'WhatsApp ma xirna' };
-    await sendText(jid, receiptText(d));
+    if (!ses(outSid()).wa.connected) return { error: 'WhatsApp ma xirna' };
+    await sendText(jid, receiptText(d), 'out');   // WhatsApp 2 (haddii uu xiran yahay)
     return { sent: true, to: d.customer.Phone, customer: d.customer.Name, receipt: d.payment.Receipt, amount: d.payment.Amount };
   }
   if (name === 'send_pdf') {
@@ -522,7 +548,7 @@ async function execTool(name, args) {
     if (!d.b64) return { error: 'PDF lama helin' };
     const jid = currentAdminJid || adminJids()[0];
     const id = newId(); ourIds.add(id);
-    await sock.sendMessage(jid, { document: Buffer.from(d.b64, 'base64'), mimetype: 'application/pdf', fileName: d.name || 'MECO.pdf' }, { messageId: id });
+    await ses(currentAdminSid).sock.sendMessage(jid, { document: Buffer.from(d.b64, 'base64'), mimetype: 'application/pdf', fileName: d.name || 'MECO.pdf' }, { messageId: id });
     return { sent: true, file: d.name };
   }
   if (name === 'reply_customer_app') return mecoCall('chat_reply', { ticketNo: args.ticketNo, query: args.query, body: args.message, from: 'admin' });
@@ -531,14 +557,15 @@ async function execTool(name, args) {
 }
 
 // ---- Fariimaha macaamiisha app-ka MECO → WhatsApp-ka maamulaha + AI jawaab → app-ka
+// Cidda ogeysiisyada heleysa: lambarada Habaynta; haddii kale WhatsApp 1 (kaaga). Waxaa laga diraa WhatsApp 2 haddii uu xiran yahay (cod/pop-up ayaad helaysaa).
 function adminJids() {
   const l = String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean);
-  if (!l.length && sock?.user?.id) l.push(userPart(sock.user.id) + '@s.whatsapp.net');
+  if (!l.length && SES.main.sock?.user?.id) l.push(userPart(SES.main.sock.user.id) + '@s.whatsapp.net');
   return l;
 }
 async function toAdmins(text) {
-  if (!wa.connected) { adminJids().forEach((jid) => notifyQueue.push({ jid, text })); return; }
-  for (const jid of adminJids()) { try { await sendText(jid, text); } catch (e) { notifyQueue.push({ jid, text }); } }
+  if (!ses(outSid()).wa.connected) { adminJids().forEach((jid) => notifyQueue.push({ jid, text })); return; }
+  for (const jid of adminJids()) { try { await sendText(jid, text, 'out'); } catch (e) { notifyQueue.push({ jid, text }); } }
 }
 const appFallbackAt = new Map();
 async function appFallback(x) {
@@ -578,38 +605,38 @@ async function handleAppMessage(x) {
   await toAdmins(`🤖 *MECO Bot → ${x.customer}* (${x.ticketNo})\n${answer}${r.error ? '\n\n⚠️ App-ka lama gaarsiin: ' + r.error : ''}${escalate ? '\n\n🙋 *Wuxuu u baahan yahay adiga* — Reply garee fariinta macmiilka si aad ugu jawaabto.' : ''}`);
 }
 
-let currentAdminJid = null;
+let currentAdminJid = null, currentAdminSid = 'main';
 // 🧠 Maskaxda af-Soomaaliga ee MECO (key la'aan): maamulaha
-async function adminEngine(jid, text) {
-  await sock.sendPresenceUpdate('composing', jid).catch(() => {});
+async function adminEngine(jid, text, sid = 'main') {
+  presence(sid, 'composing', jid);
   try {
     const r = await mecoCall('ask', { role: 'admin', text });
-    if (r.error) return sendText(jid, '⚠️ ' + r.error);
+    if (r.error) return sendText(jid, '⚠️ ' + r.error, sid);
     if (r.pdf && r.pdf.b64) {
       const id = newId(); ourIds.add(id);
-      await sock.sendMessage(jid, { document: Buffer.from(r.pdf.b64, 'base64'), mimetype: 'application/pdf', fileName: r.pdf.name || 'MECO.pdf' }, { messageId: id });
+      await ses(sid).sock.sendMessage(jid, { document: Buffer.from(r.pdf.b64, 'base64'), mimetype: 'application/pdf', fileName: r.pdf.name || 'MECO.pdf' }, { messageId: id });
       return;
     }
     if (r.sendReceipt) {
       const x = r.sendReceipt, to = toJid(x.phone);
-      if (!to) return sendText(jid, `⚠️ ${x.name} lambar telefoon kuma diiwaangashana MECO.`);
+      if (!to) return sendText(jid, `⚠️ ${x.name} lambar telefoon kuma diiwaangashana MECO.`, sid);
       await sendText(to, ['⚡ *MECO POWER SUPPLY*', '🧾 *RASIID LACAG-BIXIN*', '', `Rasiid: *${x.receipt}*`, `Macmiil: ${x.name}`, `Lacag: *${money(x.amount)}*`, `Hab: ${x.method}`,
-        `Taariikh: ${x.date} ${x.time || ''}`, x.staff ? `Qaaday: ${x.staff}` : '', `Deynta haray: ${money(x.due)}`, '', 'Mahadsanid! ✅', '_Powering Mustaxiil._'].filter((l) => l !== '').join('\n'));
-      return sendText(jid, `✅ Rasiidka ${x.receipt} waxaa loo diray ${x.name} (${x.phone}).`);
+        `Taariikh: ${x.date} ${x.time || ''}`, x.staff ? `Qaaday: ${x.staff}` : '', `Deynta haray: ${money(x.due)}`, '', 'Mahadsanid! ✅', '_Powering Mustaxiil._'].filter((l) => l !== '').join('\n'), 'out');
+      return sendText(jid, `✅ Rasiidka ${x.receipt} waxaa loo diray ${x.name} (${x.phone}) — ${ses(outSid()).label}.`, sid);
     }
-    return sendText(jid, r.text || '…');
-  } finally { sock?.sendPresenceUpdate('paused', jid).catch(() => {}); }
+    return sendText(jid, r.text || '…', sid);
+  } finally { presence(sid, 'paused', jid); }
 }
 // 🧠 Macaamiisha WhatsApp-ka (key la'aan)
-async function customerEngine(chat, jid) {
+async function customerEngine(chat, key) {
   const pending = [];
   for (let i = chat.messages.length - 1; i >= 0 && chat.messages[i].role === 'user'; i--) pending.unshift(chat.messages[i].text);
   const text = pending.join('\n') || (chat.messages[chat.messages.length - 1] || {}).text || '';
   const r = await mecoCall('ask', { role: 'customer', phone: chat.phone, text });
   if (r.error) throw new Error('MECO: ' + r.error);
   if (r.escalate) {
-    chat.needsHuman = true; saveDb(jid);
-    toAdmins(`🙋 *${chat.name || chat.phone || 'Macmiil'}* (WhatsApp${chat.phone ? ' · ' + chat.phone : ''})${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_ ${r.text.split('\n')[0]}`).catch(() => {});
+    chat.needsHuman = true; saveDb(key);
+    toAdmins(`🙋 *${chat.name || chat.phone || 'Macmiil'}* (${ses(chat.sid).label}${chat.phone ? ' · ' + chat.phone : ''})${r.kind === 'fault' ? ' — 🛠 *CILAD*' : ''}\n\n${text}\n\n🤖 _Bot-ku wuxuu ugu jawaabay:_ ${r.text.split('\n')[0]}`).catch(() => {});
   }
   return r.text;
 }
@@ -620,7 +647,7 @@ function quotedText(m) {
   const q = ctx?.quotedMessage;
   return q ? (q.conversation || q.extendedTextMessage?.text || q.imageMessage?.caption || '') : '';
 }
-async function handleAdmin(jid, text, m) {
+async function handleAdmin(jid, text, m, sid = 'main') {
   // Jawaab macmiil app-ka: Reply fariinta (CK-xxxxx) ama "/j CK-00012 qoraal"
   const qt = m ? quotedText(m) : '';
   let ck = (qt.match(/\bCK-\d+/i) || [])[0], body = text;
@@ -628,29 +655,29 @@ async function handleAdmin(jid, text, m) {
   if (jm) { ck = jm[1]; body = jm[2]; }
   if (ck && !/^\/?(reset|cusub|clear)$/i.test(text.trim())) {
     const r = await mecoCall('chat_reply', { ticketNo: ck.toUpperCase(), body, from: 'admin' });
-    return sendText(jid, r.error ? '⚠️ Lama dirin: ' + r.error : `✅ Waa loo diray *${r.customer}* (app-ka · ${r.ticketNo})`);
+    return sendText(jid, r.error ? '⚠️ Lama dirin: ' + r.error : `✅ Waa loo diray *${r.customer}* (app-ka · ${r.ticketNo})`, sid);
   }
-  currentAdminJid = jid;
-  if (!db.settings.useAI) return adminEngine(jid, text);
-  const h = adminHistory.get(jid) || [];
-  if (/^\/?(reset|cusub|clear)$/i.test(text.trim())) { adminHistory.delete(jid); return sendText(jid, '🔄 Sheekada waa la tirtiray.'); }
+  currentAdminJid = jid; currentAdminSid = sid;
+  if (!db.settings.useAI) return adminEngine(jid, text, sid);
+  const h = adminHistory.get(sid + jid) || [];
+  if (/^\/?(reset|cusub|clear)$/i.test(text.trim())) { adminHistory.delete(sid + jid); return sendText(jid, '🔄 Sheekada waa la tirtiray.', sid); }
   h.push({ role: 'user', content: text });
   while (h.length > 16) h.shift();
   while (h.length && h[0].role !== 'user') h.shift();
-  adminHistory.set(jid, h);
-  await sock.sendPresenceUpdate('composing', jid).catch(() => {});
+  adminHistory.set(sid + jid, h);
+  presence(sid, 'composing', jid);
   try {
     const now = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
     const answer = await tryModels((cfg) => runAgent({ ...cfg,
       system: ADMIN_PROMPT + `\nWaqtiga hadda: ${now} (Africa/Addis_Ababa).`, history: h, tools: MECO_TOOLS, exec: execTool }));
     const reply = answer || '…';
     h.push({ role: 'assistant', content: reply });
-    await sendText(jid, '🤖 ' + reply);
+    await sendText(jid, '🤖 ' + reply, sid);
   } catch (e) {
     console.error('Admin agent error:', e.message);
     h.pop();
-    await sendText(jid, '⚠️ AI-ga khalad: ' + e.message).catch(() => {});
-  } finally { sock?.sendPresenceUpdate('paused', jid).catch(() => {}); }
+    await sendText(jid, '⚠️ AI-ga khalad: ' + e.message, sid).catch(() => {});
+  } finally { presence(sid, 'paused', jid); }
 }
 
 // -------------------------------------------------------------
@@ -667,9 +694,7 @@ const toJid = (num) => {
 const money = (v) => Number(v || 0).toLocaleString('en-US') + ' Br';
 
 function buildNotifications(b) {
-  const admins = String(db.settings.notifyNumbers || '').split(',').map(toJid).filter(Boolean);
-  // Lambar la'aan → lambarka bot-ka laftiisa ("Message yourself")
-  if (!admins.length && sock?.user?.id) admins.push(sock.user.id.split(':')[0].split('@')[0] + '@s.whatsapp.net');
+  const admins = adminJids();
   if (b.to) admins.splice(0, admins.length, ...String(b.to).split(',').map(toJid).filter(Boolean));
   const out = [];
   const when = new Date().toLocaleString('en-GB', { timeZone: process.env.TZ_NAME || 'Africa/Addis_Ababa', hour12: false });
@@ -709,12 +734,12 @@ function buildNotifications(b) {
 
 let notifyBusy = false;
 async function flushNotifyQueue() {
-  if (notifyBusy || !wa.connected) return;
+  if (notifyBusy || !ses(outSid()).wa.connected) return;
   notifyBusy = true;
   try {
-    while (notifyQueue.length && wa.connected) {
+    while (notifyQueue.length && ses(outSid()).wa.connected) {
       const it = notifyQueue[0];
-      try { await sendText(it.jid, it.text); notifyQueue.shift(); }
+      try { await sendText(it.jid, it.text, 'out'); notifyQueue.shift(); }
       catch (e) { console.error('Notify error:', e.message); it.tries = (it.tries || 0) + 1; if (it.tries >= 3) notifyQueue.shift(); else break; }
       await new Promise((r) => setTimeout(r, 1200)); // ha u dirin si degdeg ah (spam)
     }
@@ -743,7 +768,7 @@ app.post('/api/notify', async (req, res) => {
   for (const it of items) notifyQueue.push(it);
   if (notifyQueue.length > 500) notifyQueue.splice(0, notifyQueue.length - 500);
   await flushNotifyQueue();
-  res.json({ ok: true, queued: notifyQueue.length, connected: wa.connected });
+  res.json({ ok: true, queued: notifyQueue.length, connected: ses(outSid()).wa.connected, from: ses(outSid()).label });
 });
 app.use((req, res, next) => {
   const hdr = req.headers.authorization || '';
@@ -758,6 +783,8 @@ app.get('/api/status', (req, res) => {
   const chats = Object.values(db.chats);
   res.json({
     connected: wa.connected, qr: wa.qr, me: wa.me, lastError: wa.lastError,
+    sessions: Object.values(SES).map((x) => ({ id: x.id, label: x.label, connected: x.wa.connected, qr: x.wa.qr, me: x.wa.me, lastError: x.wa.lastError, pairCode: x.wa.pairCode || null })),
+    outFrom: ses(outSid()).label,
     botEnabled: db.settings.botEnabled, lastAiError: db.settings.lastAiError || '', model: !db.settings.useAI ? '🧠 Maskaxda af-Soomaaliga (key la\'aan)' : (aiChain().slice(0, 1).map((c) => `${c.provider} · ${c.model}`)[0] || '— (key ma jiro)'),
     sheet: { configured: !!SHEET_URL, ...knowledge, text: undefined, chars: knowledge.text.length },
     stats: {
@@ -773,7 +800,7 @@ app.get('/api/chats', (req, res) => {
   const list = Object.values(db.chats)
     .sort((a, b) => b.lastTs - a.lastTs)
     .map((c) => ({
-      jid: c.jid, name: c.name, phone: c.phone, unread: c.unread || 0, needsHuman: !!c.needsHuman,
+      jid: c.key || c.jid, sid: c.sid || 'main', name: c.name, phone: c.phone, unread: c.unread || 0, needsHuman: !!c.needsHuman,
       paused: isPaused(c), manualPause: !!c.manualPause, pausedUntil: c.pausedUntil, lastTs: c.lastTs,
       last: c.messages[c.messages.length - 1] || null,
     }));
@@ -792,10 +819,10 @@ app.post('/api/chats/:jid/send', async (req, res) => {
   const text = String(req.body.text || '').trim();
   if (!c || !text) return res.status(400).json({ error: 'Xog khaldan' });
   try {
-    await sendText(c.jid, text);
+    await sendText(c.jid, text, c.sid || 'main');
     addMessage(c, 'owner', text);
     c.pausedUntil = Date.now() + db.settings.pauseMinutes * 60 * 1000;
-    c.needsHuman = false; saveDb(c.jid);
+    c.needsHuman = false; saveDb(c.key || c.jid);
     logToSheet({ phone: c.phone, name: c.name, direction: 'ADIGA', text });
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -889,8 +916,17 @@ app.post('/api/notify/test', async (req, res) => {
 });
 
 app.post('/api/logout', async (req, res) => {
-  try { await sock?.logout(); } catch { /* ignore */ }
+  try { await ses(req.body?.sid).sock?.logout(); } catch { /* ignore */ }
   res.json({ ok: true });
+});
+// Pairing code (QR la'aan): WhatsApp → Linked devices → Link with phone number
+app.post('/api/pair', async (req, res) => {
+  const x = ses(req.body?.sid || 's2');
+  const num = String(req.body?.phone || '').replace(/\D/g, '').replace(/^0/, '251');
+  if (num.length < 11) return res.status(400).json({ error: 'Lambar sax ah geli (09…)' });
+  if (x.wa.connected) return res.status(400).json({ error: x.label + ' horay ayuu u xiran yahay' });
+  try { const code = await x.sock.requestPairingCode(num); x.wa.pairCode = code; res.json({ code }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.listen(PORT, () => {
@@ -908,4 +944,5 @@ if (PUBLIC_URL) {
 const shutdown = async () => { await flush(); process.exit(0); };
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-startWhatsApp().catch((e) => console.error('WhatsApp start error:', e));
+startWhatsApp('main').catch((e) => console.error('WhatsApp 1 start error:', e));
+setTimeout(() => startWhatsApp('s2').catch((e) => console.error('WhatsApp 2 start error:', e)), 4000);

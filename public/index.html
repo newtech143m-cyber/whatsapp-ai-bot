@@ -189,16 +189,22 @@ async function loadStatus() {
     const s = await api('/api/status');
     const p = $('#waPill');
     p.className = 'pill ' + (s.connected ? 'ok' : 'bad');
-    p.textContent = s.connected ? '● Ku xiran' + (s.me?.name ? ' — ' + s.me.name : '') : '● Ma xirna';
+    const nOn = (s.sessions || []).filter(x => x.connected).length;
+    p.className = 'pill ' + (s.connected ? (nOn === 2 ? 'ok' : 'warn') : 'bad');
+    p.textContent = '● WhatsApp ' + nOn + '/2 ku xiran';
     $('#botToggle').checked = s.botEnabled;
     const h = $('#humanPill');
     h.style.display = s.stats.needsHuman ? '' : 'none';
     h.textContent = `🙋 ${s.stats.needsHuman} ayaa ku sugaya`;
-    $('#qrBox').innerHTML = s.connected
-      ? `<h3>✅ WhatsApp waa ku xiran yahay</h3><p style="color:var(--m);font-size:14px;margin:10px 0">${esc(s.me?.id || '')}</p><button class="btn red" onclick="logout()">Ka bax (Logout)</button>`
-      : s.qr
-        ? `<h3>📱 Scan garee QR-kan</h3><p style="color:var(--m);font-size:13px;margin:8px 0 14px">WhatsApp → ⋮ / Settings → <b>Linked devices</b> → <b>Link a device</b></p><img src="${s.qr}">`
-        : `<h3>⏳ Xiriirka ayaa la sameynayaa…</h3><p style="color:var(--m);font-size:13px">${esc(s.lastError || '')}</p>`;
+    const typing = document.activeElement && String(document.activeElement.id || '').startsWith('pp_');
+    if (!typing) $('#qrBox').innerHTML = (s.sessions || []).map(x => {
+      const role = x.id === 'main' ? 'Kaaga — maamulaha (Message yourself)' : 'Rasiidyada, ogeysiisyada iyo macaamiisha';
+      if (x.connected) return `<div style="padding:10px 0;border-bottom:1px solid var(--line)"><h3>✅ ${x.label} — ku xiran</h3><p style="color:var(--m);font-size:13px;margin:6px 0">${esc(role)}<br>${esc((x.me && x.me.id || '').split(':')[0])}</p><button class="btn red" onclick="logout('${x.id}')">Ka bax</button></div>`;
+      return `<div style="padding:10px 0;border-bottom:1px solid var(--line)"><h3>📱 ${x.label}</h3><p style="color:var(--m);font-size:13px;margin:6px 0 10px">${esc(role)}<br>WhatsApp → <b>Linked devices</b> → <b>Link a device</b> → scan</p>
+        ${x.qr ? `<img src="${x.qr}">` : `<p style="color:var(--m);font-size:13px">⏳ QR ayaa la sameynayaa… ${esc(x.lastError || '')}</p>`}
+        <div style="margin-top:10px;font-size:13px;color:var(--m)">Ama <b>pairing code</b> (QR la'aan): <input id="pp_${x.id}" placeholder="09xxxxxxxx" style="width:130px;padding:6px;border-radius:6px;border:1px solid var(--line);background:var(--p2);color:var(--t)"> <button class="btn" onclick="pairCode('${x.id}')">Hel code</button>
+        ${x.pairCode ? `<div style="font-size:24px;font-weight:700;letter-spacing:3px;color:var(--g);margin-top:8px">${esc(x.pairCode)}</div><small>WhatsApp → Linked devices → Link a device → <b>Link with phone number instead</b> → geli code-kan</small>` : ''}</div></div>`;
+    }).join('') + `<p style="font-size:12px;color:var(--m);margin-top:10px">📤 Rasiidyada iyo ogeysiisyada waxaa laga dirayaa: <b>${esc(s.outFrom || '')}</b></p>`;
     $('#stats').innerHTML = `
       <div class="stat">Sheekooyinka guud <b>${s.stats.chats}</b></div>
       <div class="stat">Fariimaha macaamiisha maanta <b>${s.stats.today}</b></div>
@@ -214,7 +220,8 @@ $('#botToggle').onchange = async e => {
   await api('/api/settings', { method: 'POST', body: { botEnabled: e.target.checked } });
   toast(e.target.checked ? 'Bot-ka waa la shiday ✅' : 'Bot-ka waa la damiyay ⏸');
 };
-async function logout() { if (confirm('Ma hubtaa inaad WhatsApp ka baxdo?')) { await api('/api/logout', { method: 'POST' }); toast('Waa laga baxay'); } }
+async function logout(sid) { if (confirm('Ma hubtaa inaad WhatsApp ka baxdo?')) { await api('/api/logout', { method: 'POST', body: { sid } }); toast('Waa laga baxay'); } }
+async function pairCode(sid) { try { const r = await api('/api/pair', { method: 'POST', body: { sid, phone: $('#pp_' + sid).value } }); toast('Code: ' + r.code); loadStatus(); } catch (e) { toast('❌ ' + e.message); } }
 
 // ---- chat list
 async function loadChats() {
@@ -227,7 +234,7 @@ async function loadChats() {
       <div class="b">
         <div class="r1"><span class="nm">${esc(c.name || c.phone || c.jid)}</span><span class="tm">${c.lastTs ? fmt(c.lastTs) : ''}</span></div>
         <div class="lm">${c.last ? (c.last.role !== 'user' ? (c.last.role === 'owner' ? '👤 ' : '🤖 ') : '') + esc(c.last.text) : ''}</div>
-        <div class="tags">${c.unread && c.jid !== sel ? `<span class="tag u">${c.unread}</span>` : ''}${c.needsHuman ? '<span class="tag h">🙋 Adiga ku sugaya</span>' : ''}${c.paused ? '<span class="tag p">⏸ Bot-ku wuu hakan</span>' : ''}</div>
+        <div class="tags">${c.sid === 's2' ? '<span class="tag p">WA 2</span>' : ''}${c.unread && c.jid !== sel ? `<span class="tag u">${c.unread}</span>` : ''}${c.needsHuman ? '<span class="tag h">🙋 Adiga ku sugaya</span>' : ''}${c.paused ? '<span class="tag p">⏸ Bot-ku wuu hakan</span>' : ''}</div>
       </div>
     </div>`).join('') : '<div class="empty">Weli sheeko ma jirto.<br>Marka macmiil fariin soo diro halkan ayay ka muuqan.</div>';
   document.querySelectorAll('.ci').forEach(el => el.onclick = () => openChat(el.dataset.j));
