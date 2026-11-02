@@ -16,7 +16,7 @@ import makeWASocket, {
   makeCacheableSignalKeyStore,
 } from '@whiskeysockets/baileys';
 import * as store from './store.js';
-import { MECO_TOOLS, ADMIN_PROMPT, CUSTOMER_PROMPT, SECRETARY_PROMPT, SOMALI_STYLE, runAgent } from './agent.js';
+import { MECO_TOOLS, ADMIN_PROMPT, CUSTOMER_PROMPT, SECRETARY_PROMPT, ASSIST_PROMPT, SOMALI_STYLE, runAgent } from './agent.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
@@ -151,6 +151,8 @@ let db = {
     pdfNumbers: '0916928151, 0915191946',   // MECO: PDF-ka lacag-qaadista (xisaab-xirka kadib) — kaliya lambaradan
     perPaymentNotify: false,                // MECO: lacag kasta fariin gooni ah? (maya — PDF hal mar)
     secretaryFor: 'Duale', secretaryFor2: 'Abdinur',
+    mainMode: 'silent',    // WhatsApp 1: aamus — kaliya marka milkiiluhu qoro "u jawaab"
+    s2Mode: 'ai',          // WhatsApp 2: lambarka su'aalaha — qof kasta AI ayaa u jawaaba (salaan xoghaye la'aan)
     useAI: false,          // false = maskaxda af-Soomaaliga ee MECO (key la'aan); true = AI dibadeed (Gemini/OpenRouter)
     mecoUrl: 'https://script.google.com/macros/s/AKfycbzOAYE9TIE8-xCGYLQEkiJljVAz-pHl5rIaNaB66fEO_lobtmf9R5N-5Ju7axc0H9A_/exec',
   },
@@ -478,10 +480,11 @@ async function handleMessage(m, type, sid = 'main') {
     if (ourIds.has(m.key.id)) return;           // bot-ka ama dashboard-ka ayaa diray
     if (type !== 'notify') return;
     const chat = getChat(jid, '', phone, sid);
-    // Amar: "AI u jawaab" / "bot u jawaab" → bot-ku ha sii wado sheekada (aamus la'aan)
-    if (/\b(ai|bot|botka|bot-ka)\b/i.test(text) && /jawaab|qabo|caawi|la hadal|la sheekee|sii wad/i.test(text)) {
-      chat.pausedUntil = 0; chat.manualPause = false; chat.needsHuman = false; chat.aiChat = true; chat.secGreetAt = chat.secGreetAt || Date.now(); saveDb(chat.key);
-      if (chat.messages.length && chat.messages[chat.messages.length - 1].role === 'user') scheduleReply(chat.key);
+    // Amar milkiilaha: "u jawaab" / "ai u jawaab [tilmaan]" → AI-gu wuxuu akhrinayaa sheekada + tilmaantaada, kadib hal jawaab ayuu macmiilka u dirayaa
+    const cmd = text.match(/^\s*(?:ai|bot|botka|bot-ka)?\s*,?\s*u\s*jawaab\b[\s:,.-]*([\s\S]*)$/i);
+    if (cmd) {
+      ses(sid).sock?.sendMessage(jid, { delete: m.key }).catch(() => {});   // amarka macmiilku ha arkin (delete for everyone)
+      ownerCommand(chat, cmd[1].trim()).catch((e) => console.error('Owner command:', e.message));
       return;
     }
     // Adiga ayaa telefoonka ka jawaabay → bot-ku ha iska aamuso muddo
@@ -503,6 +506,7 @@ async function handleMessage(m, type, sid = 'main') {
   const ignored = db.settings.ignoreNumbers.split(',').map((s) => s.replace(/\D/g, '')).filter(Boolean);
   if (ignored.includes(chat.phone)) return;
   if (Date.now() - tsMs > db.settings.maxAgeMinutes * 60 * 1000) return;
+  if (sid === 'main' && db.settings.mainMode !== 'auto') return;   // 🔇 WhatsApp 1: aamus (kaliya amarka "u jawaab")
   scheduleReply(chat.key);
 }
 
@@ -755,8 +759,42 @@ async function customerEngine(chat, key) {
       return (await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true)).replace(/\[ADMIN\]/gi, '').trim();
     } catch (e) { console.error('Customer AI:', e.message); }
   }
-  // 2) Wax kale (salaan, sheeko gaar ah, su'aal aan MECO ahayn) → xoghaye
+  // 2) WhatsApp 2 (lambarka su'aalaha): wax kasta oo kale → AI (salaan xoghaye la'aan)
+  if (chat.sid === 's2' && db.settings.s2Mode !== 'secretary') return assistReply(chat, key);
+  // 3) Wax kale (salaan, sheeko gaar ah, su'aal aan MECO ahayn) → xoghaye
   return secretaryReply(chat, key, text);
+}
+async function assistReply(chat, key) {
+  try {
+    const sys = ASSIST_PROMPT(ownerName(chat.sid)) + `\nWaqtiga hadda: ${nowTxt()}\nMagaca qofka (WhatsApp): ${chat.name || '—'}`;
+    return await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat)), true);
+  } catch (e) {
+    console.error('Assist AI:', e.message);
+    return 'Waan ka xumahay, hadda si buuxda uma jawaabi karo 🙏 — fadlan daqiiqad kadib mar kale isku day.';
+  }
+}
+// 🎯 Amarka milkiilaha ("u jawaab …"): hal jawaab oo macmiilka loo diro — kadibna aamus
+async function ownerCommand(chat, instruction) {
+  const key = chat.key || chat.jid, jid = chat.jid || key;
+  presence(chat, 'composing', jid);
+  try {
+    const owner = ownerName(chat.sid);
+    let ctx = null;
+    const lastUser = [...chat.messages].reverse().find((m) => m.role === 'user');
+    if (!instruction && lastUser) {   // tilmaan la'aan: haddii su'aashu MECO tahay → xogta dhabta ah
+      const r = await mecoCall('ask', { role: 'customer', phone: chat.mecoPhone || chat.phone, text: lastUser.text });
+      if (!r.notCustomer && !r.error) ctx = r.context;
+      if (MECO_KINDS.includes(r.kind) && r.text) { await sendText(jid, r.text, chat.sid); addMessage(chat, 'assistant', r.text); return; }
+    }
+    const sys = ASSIST_PROMPT(owner) + `\nWaqtiga hadda: ${nowTxt()}\nMagaca qofka: ${chat.name || '—'}` +
+      (ctx ? `\nQofkani waa macmiil MECO. ACCOUNT:\n${JSON.stringify(ctx, null, 1).slice(0, 5000)}` : '') +
+      (instruction ? `\n\nTILMAANTA ${owner.toUpperCase()} (raac si sax ah, adigoo u jawaabaya qofka sidii ${owner} oo kale — ha sheegin in tilmaan lagu siiyay): ${instruction}` : `\n\nU jawaab fariintii u dambeysay ee qofka.`);
+    const a = (await tryModels((cfg) => callAI(cfg, sys, buildHistory(chat).length ? buildHistory(chat) : [{ role: 'user', content: lastUser?.text || 'Salaan' }]), true)).replace(/\[ADMIN\]/gi, '').trim();
+    if (a) { await sendText(jid, a, chat.sid); addMessage(chat, 'assistant', a); }
+  } catch (e) {
+    console.error('Owner command AI:', e.message);
+    toSelf(chat.sid, `⚠️ "u jawaab" — AI-gu ma jawaabin (${chat.name || chat.phone || ''}): ${e.message}`);
+  } finally { presence(chat, 'paused', jid); saveDb(key); }
 }
 // Qofku ma rabaa milkiilaha? (gudbi, isaga, "waxaan u baahnaa Duale", "xog ka rabay", haa/ok…)
 function wantsOwner(text, owner, sid) {
@@ -807,6 +845,7 @@ async function handleAdmin(jid, text, m, sid = 'main') {
     const r = await mecoCall('chat_reply', { ticketNo: ck.toUpperCase(), body, from: 'admin' });
     return sendText(jid, r.error ? '⚠️ Lama dirin: ' + r.error : `✅ Waa loo diray *${r.customer}* (app-ka · ${r.ticketNo})`, sid);
   }
+  if (sid === 'main' && db.settings.mainMode !== 'auto') return;   // 🔇 WhatsApp 1: su'aalaha → WhatsApp 2 (0915191946)
   currentAdminJid = jid; currentAdminSid = sid;
   return adminEngine(jid, text, sid);
   const h = adminHistory.get(sid + jid) || [];
