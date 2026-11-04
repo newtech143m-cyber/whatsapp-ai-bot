@@ -47,7 +47,7 @@ const stripThink = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, 
 // Macaamiisha (jawaab qoraal oo kaliya, tools la'aan): model-yo af-Soomaali ku wanaagsan ayaa marka hore la isku dayaa
 const CUSTOMER_MODELS = { openrouter: ['google/gemma-3-27b-it:free', 'meta-llama/llama-3.3-70b-instruct:free'] };
 // Gemini (af-Soomaali aad u fiican) — model kasta xaddid bilaash ah oo gooni ah ayuu leeyahay
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
 function geminiKey() {
   if (db.settings.geminiKey) return db.settings.geminiKey;
   const k = process.env.GEMINI_API_KEY || '';
@@ -61,8 +61,10 @@ const DIAG_CANDIDATES = [
 ];
 async function runAiDiag() {
   const out = [], orKey = db.settings.aiProvider === 'openrouter' ? db.settings.aiKey : '';
-  for (const c0 of DIAG_CANDIDATES) {
+  const gk = geminiKey();
+  for (const c0 of [...(gk ? GEMINI_MODELS.map((model) => ({ provider: 'gemini', key: gk, model })) : []), ...DIAG_CANDIDATES]) {
     const c = { ...c0, key: c0.provider === 'openrouter' ? orKey : c0.key };
+    if (c.provider === 'pollinations' && gk && out.some((x) => x.ok)) continue;
     if (!c.key) continue;
     const t0 = Date.now();
     try {
@@ -83,8 +85,9 @@ function aiChain(forCustomer) {
   const orKey = db.settings.aiProvider === 'openrouter' ? db.settings.aiKey : '';
   const mk = (p, m) => { const c = DIAG_CANDIDATES.find((x) => x.provider === p && x.model === m); return c ? { ...c, key: p === 'openrouter' ? orKey : c.key } : null; };
   if (pref.length) { const l = pref.map((x) => { const i = x.indexOf('/'); return mk(x.slice(0, i), x.slice(i + 1)); }).filter((c) => c && c.key); if (l.length) return l; }
-  const chain = [mk('pollinations', 'openai')];
-  const gk0 = geminiKey(); if (gk0) chain.push(...GEMINI_MODELS.map((model) => ({ provider: 'gemini', key: gk0, model })));
+  const chain = [];
+  const gk0 = geminiKey(); if (gk0) chain.push(...GEMINI_MODELS.map((model) => ({ provider: 'gemini', key: gk0, model })));   // ⭐ Gemini marka hore
+  chain.push(mk('pollinations', 'openai'));                                                                                       // kayd
   // openrouter/free: tayo hoose (Ingiriis/fikir) → lama isticmaalo; haddii Pollinations mashquul yahay, jawaab kayd ah ayaa la bixinayaa
   if (chain.length) return chain;
   // 1) Pollinations — bilaash, key la'aan (GPT family, af-Soomaali wanaagsan)
