@@ -47,7 +47,7 @@ const stripThink = (t) => String(t || '').replace(/<think>[\s\S]*?<\/think>/gi, 
 // Macaamiisha (jawaab qoraal oo kaliya, tools la'aan): model-yo af-Soomaali ku wanaagsan ayaa marka hore la isku dayaa
 const CUSTOMER_MODELS = { openrouter: ['google/gemma-3-27b-it:free', 'meta-llama/llama-3.3-70b-instruct:free'] };
 // Gemini (af-Soomaali aad u fiican) — model kasta xaddid bilaash ah oo gooni ah ayuu leeyahay
-const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+const GEMINI_MODELS = ['gemini-flash-latest', 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'];
 function geminiKey() {
   if (db.settings.geminiKey) return db.settings.geminiKey;
   const k = process.env.GEMINI_API_KEY || '';
