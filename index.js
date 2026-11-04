@@ -155,7 +155,7 @@ let db = {
     perPaymentNotify: false,                // MECO: lacag kasta fariin gooni ah? (maya — PDF hal mar)
     secretaryFor: 'Duale', secretaryFor2: 'Abdinur',
     mainMode: 'silent',    // WhatsApp 1: aamus — kaliya marka milkiiluhu qoro "u jawaab"
-    s2Mode: 'ai',          // WhatsApp 2: lambarka su'aalaha — qof kasta AI ayaa u jawaaba (salaan xoghaye la'aan)
+    s2Mode: 'silent',      // WhatsApp 2: macaamiisha/dadka kale uma jawaabo — kaliya maamulaha (su'aalaha)
     useAI: false,          // false = maskaxda af-Soomaaliga ee MECO (key la'aan); true = AI dibadeed (Gemini/OpenRouter)
     mecoUrl: 'https://script.google.com/macros/s/AKfycbzOAYE9TIE8-xCGYLQEkiJljVAz-pHl5rIaNaB66fEO_lobtmf9R5N-5Ju7axc0H9A_/exec',
   },
@@ -510,6 +510,7 @@ async function handleMessage(m, type, sid = 'main') {
   if (ignored.includes(chat.phone)) return;
   if (Date.now() - tsMs > db.settings.maxAgeMinutes * 60 * 1000) return;
   if (sid === 'main' && db.settings.mainMode !== 'auto') return;   // 🔇 WhatsApp 1: aamus (kaliya amarka "u jawaab")
+  if (sid === 's2' && db.settings.s2Mode === 'silent') return;     // 🔇 WhatsApp 2: dadka kale uma jawaabo (kaliya maamulaha)
   scheduleReply(chat.key);
 }
 
